@@ -2,3 +2,4 @@ phantoms
 __pycache__
 *.so
 *.bin
+timeline.json
