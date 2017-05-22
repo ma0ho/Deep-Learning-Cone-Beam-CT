@@ -15,6 +15,7 @@ RAMLAK_WIDTH = 101
 VOLUME_SHAPE = [ 200, 200, 200 ]
 VOLUME_ORIGIN = [ -99.5, -99.5, -99.5 ]
 PIXEL_WIDTH_MM = 1
+PIXEL_HEIGHT_MM = 1
 SOURCE_DET_DISTANCE = 1200
 N = 200
 U = 620
@@ -28,7 +29,7 @@ asserts = []
 
 # READ DATA
 #-------------------------------------------------------------------------------------------
-proj = dennerlein.read( DATA_P + 'shepp-logan-proj-cos.bin' )
+proj = dennerlein.read( DATA_P + 'shepp-logan-proj.bin' )
 geom, angles = projtable.read( DATA_P + 'projMat.txt' )
 geom_tensor = tf.constant( geom, dtype = tf.float32 )
 proj_shape = tf.shape( proj )
@@ -36,11 +37,19 @@ with tf.control_dependencies( [ proj ] ):
     asserts.append( tf.assert_equal( tf.shape( proj ), [ N, V, U ] ) )
 
 
+# COSINE
+#-------------------------------------------------------------------------------------------
+cosine_w_np = ct.init_cosine_3D( SOURCE_DET_DISTANCE, U, V, PIXEL_WIDTH_MM,
+        PIXEL_HEIGHT_MM )
+cosine_w = tf.constant( cosine_w_np, dtype = tf.float32 )
+proj_cosine = tf.multiply( proj, cosine_w )
+
+
 # PARKER
 #-------------------------------------------------------------------------------------------
 parker_w_np = ct.init_parker_3D( angles, SOURCE_DET_DISTANCE, U, PIXEL_WIDTH_MM )
 parker_w = tf.constant( parker_w_np, dtype = tf.float32 )
-proj_parker = tf.multiply( proj, parker_w )
+proj_parker = tf.multiply( proj_cosine, parker_w )
 
 
 # RAMLAK
@@ -82,7 +91,7 @@ volume = ct.backproject(
 
 # WRITE RESULT
 #-------------------------------------------------------------------------------------------
-write_op = dennerlein.write( '/tmp/test-parker.bin', volume )
+write_op = dennerlein.write( '/tmp/test-cos.bin', volume )
 
 
 with tf.Session() as sess:

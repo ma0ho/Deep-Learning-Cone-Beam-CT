@@ -56,14 +56,13 @@ def init_parker_1D( beta, source_det_dist_mm, U, pixel_width_mm, delta ):
 
 
 '''
-    Generate 3D volume of parker weights that can directly be applied
-    to the input projections
+    Generate 3D volume of parker weights
 
     U
         detector width
 
     returns
-        numpy array of shape [#projections, 1, detector width]
+        numpy array of shape [#projections, 1, U]
 '''
 def init_parker_3D( primary_angles_rad, source_det_dist_mm, U, pixel_width_mm ):
     pa = primary_angles_rad
@@ -90,5 +89,33 @@ def init_parker_3D( primary_angles_rad, source_det_dist_mm, U, pixel_width_mm ):
         ]
 
     return np.concatenate( w )
+
+
+'''
+    Generate 3D volume of cosine weights
+
+    U
+        detector width
+    V
+        detector height
+
+    returns
+        numpy array of shape [1, V, U]
+
+'''
+def init_cosine_3D( source_det_dist_mm, U, V, pixel_width_mm, pixel_height_mm ):
+    cu = U/2 * pixel_width_mm
+    cv = V/2 * pixel_height_mm
+    sd2 = source_det_dist_mm**2
+
+    w = np.zeros( ( 1, V, U ), dtype = np.float )
+
+    for v in range( 0, V ):
+        dv = ( (v+0.5) * pixel_height_mm - cv )**2
+        for u in range( 0, U ):
+            du = ( (u+0.5) * pixel_width_mm - cu )**2
+            w[0,v,u] = source_det_dist_mm / math.sqrt( sd2 + dv + dv )
+
+    return w
 
 
