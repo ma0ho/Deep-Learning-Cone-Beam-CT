@@ -1,6 +1,8 @@
 import tensorflow as tf
 import os
 import math
+import numpy as np
+import tfcone.util.numerical as nm
 
 _path = os.path.dirname(os.path.abspath(__file__))
 _write_module = tf.load_op_library( _path + '/../../user-ops/backproject.so' )
@@ -18,5 +20,75 @@ def init_ramlak_1D( width, pixel_width_mm ):
             for i in range( -hw, hw+1 )
         ]
     f[hw] = 1/4 * math.pow( pixel_width_mm, 2 )
+
     return f
+
+
+'''
+    Generate 1D parker row-weights
+
+    beta
+        projection angle in [0, pi + 2*delta]
+    delta
+        overscan angle
+
+'''
+def init_parker_1D( beta, source_det_dist_mm, U, pixel_width_mm, delta ):
+    assert( beta + nm.eps >= 0 and beta - nm.eps <= math.pi + 2*delta )
+
+    if( beta <= 0.0 ):
+        beta = nm.eps
+
+    w = np.ones( ( U ), dtype = np.float )
+
+    for u in range( 0, U ):
+        alpha = math.atan( ( u+0.5 - U/2 ) * pixel_width_mm / source_det_dist_mm )
+
+        if beta <= 2*delta - 2*alpha:
+            # begin of scan
+            w[u] = math.pow( math.sin( math.pi/4 * ( beta / (delta-alpha) ) ), 2 )
+
+        elif beta >= math.pi - 2*alpha:
+            # end of scan
+            w[u] = math.pow( math.sin( math.pi/4 * ( ( math.pi + 2*delta - beta ) / ( delta + alpha ) ) ), 2 )
+
+    return w
+
+
+'''
+    Generate 3D volume of parker weights that can directly be applied
+    to the input projections
+
+    U
+        detector width
+
+    returns
+        numpy array of shape [#projections, 1, detector width]
+'''
+def init_parker_3D( primary_angles_rad, source_det_dist_mm, U, pixel_width_mm ):
+    pa = primary_angles_rad
+
+    # normalize angles to [0, 2*pi]
+    pa -= pa[0]
+    pa = np.where( pa < 0, pa + 2*math.pi, pa )
+
+    # find rotation such that max(angles) is minimal
+    tmp = np.reshape( pa, ( pa.size, 1 ) ) - pa
+    tmp = np.where( tmp < 0, tmp + 2*math.pi, tmp )
+    pa = tmp[:, np.argmin( np.max( tmp, 0 ) )]
+
+    # according to conrad implementation
+    delta = math.atan( float(U * pixel_width_mm) / 2 / source_det_dist_mm )
+
+    # go over projections
+    w = [
+            np.reshape(
+                init_parker_1D( pa[i], source_det_dist_mm, U, pixel_width_mm, delta ),
+                ( 1, 1, U )
+            )
+            for i in range( 0, pa.size )
+        ]
+
+    return np.concatenate( w )
+
 

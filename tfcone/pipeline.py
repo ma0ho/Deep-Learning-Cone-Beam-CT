@@ -15,17 +15,32 @@ RAMLAK_WIDTH = 101
 VOLUME_SHAPE = [ 200, 200, 200 ]
 VOLUME_ORIGIN = [ -99.5, -99.5, -99.5 ]
 PIXEL_WIDTH_MM = 1
+SOURCE_DET_DISTANCE = 1200
+N = 200
+U = 620
+V = 480
 
+
+# GLOBALS
+#-------------------------------------------------------------------------------------------
+asserts = []
 
 
 # READ DATA
 #-------------------------------------------------------------------------------------------
-proj = dennerlein.read( DATA_P + 'shepp-logan-proj-cos-parker.bin' )
-geom = projtable.read( DATA_P + 'projMat.txt' )
+proj = dennerlein.read( DATA_P + 'shepp-logan-proj-cos.bin' )
+geom, angles = projtable.read( DATA_P + 'projMat.txt' )
+geom_tensor = tf.constant( geom, dtype = tf.float32 )
 proj_shape = tf.shape( proj )
-N = proj_shape[0]
-V = proj_shape[1]
-U = proj_shape[2]
+with tf.control_dependencies( [ proj ] ):
+    asserts.append( tf.assert_equal( tf.shape( proj ), [ N, V, U ] ) )
+
+
+# PARKER
+#-------------------------------------------------------------------------------------------
+parker_w_np = ct.init_parker_3D( angles, SOURCE_DET_DISTANCE, U, PIXEL_WIDTH_MM )
+parker_w = tf.constant( parker_w_np, dtype = tf.float32 )
+proj_parker = tf.multiply( proj, parker_w )
 
 
 # RAMLAK
@@ -35,7 +50,7 @@ U = proj_shape[2]
 # that with conv2d..
 
 # need format batch, depth, height, width, channel for conv3d
-proj_batch = tf.reshape( proj, [ 1, N, V, U, 1 ] )
+proj_batch = tf.reshape( proj_parker, [ 1, N, V, U, 1 ] )
 
 def kernel_init( shape, dtype, partition_info = None ):
     kernel = tf.Variable( ct.init_ramlak_1D( RAMLAK_WIDTH, PIXEL_WIDTH_MM ), dtype = dtype )
@@ -50,7 +65,7 @@ ramlak_batch = tf.layers.conv3d(
         kernel_initializer = kernel_init,
         name = 'ramlak-filter'
     )
-ramlak = tf.reshape( ramlak_batch, [ N, V, U ] )
+proj_ramlak = tf.reshape( ramlak_batch, [ N, V, U ] )
 
 
 # BACKPROJECTION
@@ -58,8 +73,8 @@ ramlak = tf.reshape( ramlak_batch, [ N, V, U ] )
 vo = tf.contrib.util.make_tensor_proto( VOLUME_ORIGIN,
         tf.float32 )
 volume = ct.backproject(
-        projections = proj,
-        geom = geom,
+        projections = proj_ramlak,
+        geom = geom_tensor,
         vol_shape = VOLUME_SHAPE,
         vol_origin=vo
     )
@@ -67,7 +82,7 @@ volume = ct.backproject(
 
 # WRITE RESULT
 #-------------------------------------------------------------------------------------------
-write_op = dennerlein.write( '/tmp/test.bin', volume )
+write_op = dennerlein.write( '/tmp/test-parker.bin', volume )
 
 
 with tf.Session() as sess:
@@ -77,7 +92,7 @@ with tf.Session() as sess:
     run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
     run_metadata = tf.RunMetadata()
 
-    v = sess.run( write_op, options = run_options, run_metadata = run_metadata )
+    v = sess.run( [ write_op ] + asserts, options = run_options, run_metadata = run_metadata )
 
     # write timeline object to file
     tl = timeline.Timeline(run_metadata.step_stats)
