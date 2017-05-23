@@ -13,12 +13,6 @@ REGISTER_OP("WriteDennerlein")
    .Attr("T: {float, double}")
    .Input("filename: string")
    .Input("data: T")
-//   .Output("data_out: T")
-//   .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
-//         c->set_output(0, c->input(0));
-//         return Status::OK();
-//   });
-
 ;
 
 template<typename T>
@@ -44,7 +38,7 @@ public:
       const auto data = context->input( 1 );
       const auto data_tensor = data.flat<T>();
       const auto shape = data.shape();
-      const unsigned short Z = shape.dim_size( 0 ), X = shape.dim_size( 1 ), Y = shape.dim_size( 2 );
+      const unsigned short Z = shape.dim_size( 0 ), Y = shape.dim_size( 1 ), X = shape.dim_size( 2 );
 
       std::ofstream s( filename, std::ios_base::out | std::ios_base::binary );
 
@@ -56,9 +50,6 @@ public:
      
       s.flush();
       s.close();
-
-      // forward input data
-//      OP_REQUIRES_OK( context, context->set_output( "data_out", data ) );
    }
 
 };
