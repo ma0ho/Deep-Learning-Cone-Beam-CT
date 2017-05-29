@@ -8,16 +8,19 @@ from tensorflow.python.client import timeline
 # CONFIG
 #-------------------------------------------------------------------------------------------
 DATA_P = os.path.abspath(
-        os.path.dirname( os.path.abspath( __file__ ) ) + '/../phantoms/conrad-2/'
+        os.path.dirname( os.path.abspath( __file__ ) ) + '/../phantoms/conrad-3/'
     ) + '/'
 
-RAMLAK_WIDTH = 101
-VOLUME_SHAPE = [ 200, 200, 200 ]
-VOLUME_ORIGIN = [ -99.5, -99.5, -99.5 ]
+RAMLAK_WIDTH = 401
+VOLUME_SHAPE_VX = [ 150, 180, 220 ]
+VOLUME_ORIGIN_MM = [ -223.5, -179.5, -109.5 ]
+VOXEL_WIDTH_MM = 1
+VOXEL_HEIGHT_MM = 2
+VOXEL_DEPTH_MM = 3
 PIXEL_WIDTH_MM = 1
 PIXEL_HEIGHT_MM = 1
 SOURCE_DET_DISTANCE = 1200
-N = 200
+N = 250
 U = 620
 V = 480
 
@@ -39,8 +42,8 @@ with tf.control_dependencies( [ proj ] ):
 
 # COSINE
 #-------------------------------------------------------------------------------------------
-cosine_w_np = ct.init_cosine_3D( SOURCE_DET_DISTANCE, U, V, PIXEL_WIDTH_MM,
-        PIXEL_HEIGHT_MM )
+cosine_w_np = ct.init_cosine_3D( SOURCE_DET_DISTANCE, U, V, VOXEL_WIDTH_MM,
+        VOXEL_HEIGHT_MM )
 cosine_w = tf.constant( cosine_w_np, dtype = tf.float32 )
 proj_cosine = tf.multiply( proj, cosine_w )
 
@@ -79,20 +82,25 @@ proj_ramlak = tf.reshape( ramlak_batch, [ N, V, U ] )
 
 # BACKPROJECTION
 #-------------------------------------------------------------------------------------------
-vo = tf.contrib.util.make_tensor_proto( VOLUME_ORIGIN,
+vo = tf.contrib.util.make_tensor_proto( VOLUME_ORIGIN_MM,
         tf.float32 )
+geom_proto = tf.contrib.util.make_tensor_proto( geom, tf.float32 )
+voxel_dimen = tf.contrib.util.make_tensor_proto( [ VOXEL_DEPTH_MM,
+        VOXEL_HEIGHT_MM, VOXEL_WIDTH_MM ], tf.float32 )
 volume = ct.backproject(
         projections = proj_ramlak,
-        geom = geom_tensor,
-        vol_shape = VOLUME_SHAPE,
-        vol_origin=vo
+        geom = geom_proto,
+        vol_shape = VOLUME_SHAPE_VX,
+        vol_origin=vo,
+        voxel_dimen = voxel_dimen
     )
+
+#volume = tf.transpose( volume, [0,2,1] )
 
 
 # WRITE RESULT
 #-------------------------------------------------------------------------------------------
-write_op = dennerlein.write( '/tmp/test-cos.bin', volume )
-
+write_op = dennerlein.write( '/tmp/test.bin', volume )
 
 with tf.Session() as sess:
     sess.run( tf.global_variables_initializer() )
