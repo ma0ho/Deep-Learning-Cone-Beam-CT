@@ -3,6 +3,7 @@ import os
 import math
 import numpy as np
 import tfcone.util.numerical as nm
+import sys
 
 _path = os.path.dirname(os.path.abspath(__file__))
 _write_module = tf.load_op_library( _path + '/../../user-ops/backproject.so' )
@@ -10,6 +11,9 @@ backproject = _write_module.backproject
 
 '''
     generate 1D-RamLak filter according to Kak & Slaney, chapter 3 equation 61
+
+    Note: Conrad implements a slightly different variant, that's why results
+    differ in the absolute voxel intensities
 '''
 def init_ramlak_1D( width, pixel_width_mm ):
     assert( width % 2 == 1 )
@@ -34,23 +38,23 @@ def init_ramlak_1D( width, pixel_width_mm ):
 
 '''
 def init_parker_1D( beta, source_det_dist_mm, U, pixel_width_mm, delta ):
-    assert( beta + nm.eps >= 0 and beta - nm.eps <= math.pi + 2*delta )
-
-    if( beta <= 0.0 ):
-        beta = nm.eps
+    assert( beta + nm.eps >= 0 )
 
     w = np.ones( ( U ), dtype = np.float )
 
     for u in range( 0, U ):
         alpha = math.atan( ( u+0.5 - U/2 ) * pixel_width_mm / source_det_dist_mm )
 
-        if beta <= 2*delta - 2*alpha:
+        if beta >= 0 and beta < 2 * (delta+alpha):
             # begin of scan
-            w[u] = math.pow( math.sin( math.pi/4 * ( beta / (delta-alpha) ) ), 2 )
-
-        elif beta >= math.pi - 2*alpha:
+            w[u] = math.pow( math.sin( math.pi/4 * ( beta / (delta+alpha) ) ), 2 )
+        elif beta >= math.pi + 2*alpha and beta < math.pi + 2*delta:
             # end of scan
-            w[u] = math.pow( math.sin( math.pi/4 * ( ( math.pi + 2*delta - beta ) / ( delta + alpha ) ) ), 2 )
+            w[u] = math.pow( math.sin( math.pi/4 * ( ( math.pi + 2*delta - beta
+                ) / ( delta - alpha ) ) ), 2 )
+        elif beta >= math.pi + 2*delta:
+            # out of range
+            w[u] = 0.0
 
     return w
 
@@ -77,7 +81,7 @@ def init_parker_3D( primary_angles_rad, source_det_dist_mm, U, pixel_width_mm ):
     pa = tmp[:, np.argmin( np.max( tmp, 0 ) )]
 
     # according to conrad implementation
-    delta = math.atan( float(U * pixel_width_mm) / 2 / source_det_dist_mm )
+    delta = math.atan( ( float(U * pixel_width_mm) / 2 ) / source_det_dist_mm )
 
     # go over projections
     w = [
