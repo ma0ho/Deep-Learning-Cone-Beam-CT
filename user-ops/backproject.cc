@@ -3,6 +3,8 @@
 #include "tensorflow/core/framework/op_kernel.h"
 #include <iostream>
 #include <math.h>
+#include "backproject.hcu"
+#include <assert.h>
 
 
 using namespace tensorflow;
@@ -15,6 +17,7 @@ REGISTER_OP("Backproject")
    .Input("projections: float")
    .Attr("geom: tensor")
    .Attr("vol_shape: shape")
+   .Attr("proj_shape: shape")
    .Attr("vol_origin: tensor")
    .Attr("voxel_dimen: tensor")
    .Output("vol: float")
@@ -32,14 +35,14 @@ REGISTER_OP("Backproject")
 class BackprojectOp : public OpKernel
 {
 
-private: 
+protected: 
 
    // volume size in voxels
    TensorShape vol_shape_;
    int X_, Y_, Z_;
 
    // number of projections
-   int N_;
+   int U_, V_, N_;
 
    // volume origin in mm
    float ox_, oy_, oz_;
@@ -48,7 +51,7 @@ private:
    float sx_, sy_, sz_;
 
    // projection matrices
-   Eigen::Tensor<float, 3> geom_;
+   Eigen::Tensor<float, 3, Eigen::RowMajor> geom_;
    
 
 public:
@@ -58,6 +61,12 @@ public:
       Z_ = vol_shape_.dim_size( 0 );
       Y_ = vol_shape_.dim_size( 1 );
       X_ = vol_shape_.dim_size( 2 );
+
+      TensorShape proj_shape;
+      OP_REQUIRES_OK( context, context->GetAttr( "proj_shape", &proj_shape ) );
+      N_ = proj_shape.dim_size( 0 );
+      V_ = proj_shape.dim_size( 1 );
+      U_ = proj_shape.dim_size( 2 );
 
       Tensor t;
       OP_REQUIRES_OK( context, context->GetAttr( "vol_origin", &t ) );
@@ -77,7 +86,7 @@ public:
       OP_REQUIRES_OK( context, context->GetAttr( "geom", &g ) );
       auto gt = g.tensor<float, 3>();
       N_ = gt.dimension( 0 );
-      geom_ = Eigen::Tensor<float, 3>( N_, 3, 4 );
+      geom_ = Eigen::Tensor<float, 3, Eigen::RowMajor>( N_, 3, 4 );
 
       // normalize projection matrices such that backprojection
       // weight (third row * voxel) is 1 at isocenter
@@ -165,7 +174,42 @@ public:
 
 };
 
-REGISTER_KERNEL_BUILDER( Name( "Backproject" ).Device( DEVICE_CPU ), BackprojectOp );
 
+class BackprojectCudaOp : public BackprojectOp
+{
+
+public:
+   
+   explicit BackprojectCudaOp(OpKernelConstruction* context) : BackprojectOp(context) {
+      assert( N_ <= MAX_PROJ_STACK_SIZE ); 
+
+      cuda_init_backproject( geom_.data(),
+                             U_, V_, N_,
+                             X_, Y_, Z_,
+                             ox_, oy_, oz_,
+                             sx_, sy_, sz_ );
+   }
+
+   void Compute(OpKernelContext* context) override
+   {
+      // grab input
+      const auto proj = context->input( 0 ).tensor<float, 3>();
+      // TODO: Check that #projections == #matrices
+      const int U = proj.dimension( 2 );   // size of projection planes
+      const int V = proj.dimension( 1 );
+
+      // create output
+      Tensor* volume_tensor = nullptr;
+      OP_REQUIRES_OK( context, context->allocate_output( 0,
+               vol_shape_, &volume_tensor ) );
+      auto volume = volume_tensor->tensor<float, 3>();
+
+      cuda_backproject( proj.data(), volume.data() );
+   }
+
+};
+
+REGISTER_KERNEL_BUILDER( Name( "Backproject" ).Device( DEVICE_CPU ), BackprojectOp );
+REGISTER_KERNEL_BUILDER( Name( "Backproject" ).Device( DEVICE_GPU ), BackprojectCudaOp );
 
 
