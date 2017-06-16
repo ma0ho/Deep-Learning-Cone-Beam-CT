@@ -26,7 +26,7 @@ __constant__ float3 vol_orig_;
 __constant__ float3 voxel_size_;
 static int3 proj_shape_host_;
 static int3 vol_shape_host_;
-texture<float, cudaTextureType2D, cudaReadModeElementType> projTex_;
+texture<float, cudaTextureType2DLayered> projTex_;
 
 inline __device__
 float3 map( float3&& vp, int n )
@@ -40,9 +40,7 @@ float3 map( float3&& vp, int n )
 }
 
 __global__
-void kernel( size_t projOffset,
-             float* vol,
-             const float* proj )
+void kernel( float* vol )
 {
    const int i = blockIdx.x*blockDim.x + threadIdx.x;
    const int j = blockIdx.y*blockDim.y + threadIdx.y;
@@ -65,19 +63,7 @@ void kernel( size_t projOffset,
       ip.x *= ip.z;
       ip.y *= ip.z;
 
-      // check if we are within detector (x coord is checked by tex2D)
-      if( ip.y >= 0.5 && ip.y <= ((float)proj_shape_.y) - 0.5 )
-      {
-         // projections in 2D texture are stacked in y direction..
-         //float offsY = proj_shape_.x * proj_shape_.y * n;
-         //float offsX = projOffset / sizeof(float);
-         //val += tex2D( projTex_, ip.x + offsX, ip.y + offsY ) * ip.z * ip.z;
-         if( ip.x >= 0.5 && ip.x <= ((float)proj_shape_.x) - 0.5 ) {
-            int x = (int)ip.x;
-            int y = (int)ip.y;
-            val += proj[n*(proj_shape_.x+4)*proj_shape_.y + y*(proj_shape_.x+4) + x ] * ip.z*ip.z;
-         }
-      }
+      val += tex2DLayered( projTex_, ip.x, ip.y, n ) * ip.z * ip.z;
    }
 
    // linear volume address
@@ -107,17 +93,37 @@ void cuda_init_backproject( float* geom,
 __host__
 void cuda_backproject( const float* proj, float* vol )
 {
+   // set texture properties
    projTex_.addressMode[0] = cudaAddressModeBorder;
    projTex_.addressMode[1] = cudaAddressModeBorder;
    projTex_.addressMode[2] = cudaAddressModeBorder;
    projTex_.filterMode = cudaFilterModeLinear;
    projTex_.normalized = false;
-   auto projDesc = cudaCreateChannelDesc<float>();
-   size_t projOffset = 0;
-   gpuErrchk( cudaBindTexture2D( &projOffset, projTex_, vol, projDesc,
-            proj_shape_host_.x, proj_shape_host_.y,
-            ( proj_shape_host_.x + (8-proj_shape_host_.x%8) ) * sizeof(float) )
-         );
+
+   // malloc cuda array for texture
+   cudaExtent projExtent = make_cudaExtent( proj_shape_host_.x,
+                                            proj_shape_host_.y,
+                                            proj_shape_host_.z );
+   cudaArray *projArray;
+   static cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float>();
+   gpuErrchk( cudaMalloc3DArray( &projArray, &channelDesc, projExtent, cudaArrayLayered ) );
+
+
+   // copy data to 3D array
+   cudaMemcpy3DParms copyParams = {0};
+   copyParams.srcPtr   = make_cudaPitchedPtr( const_cast<float*>( proj ),
+                                              proj_shape_host_.x*sizeof(float),
+                                              proj_shape_host_.x,
+                                              proj_shape_host_.y
+                                            );
+   copyParams.dstArray = projArray;
+   copyParams.extent   = projExtent;
+   copyParams.kind     = cudaMemcpyDeviceToDevice;
+   gpuErrchk( cudaMemcpy3D( &copyParams ) );
+   
+   // bind texture reference
+   gpuErrchk( cudaBindTextureToArray( projTex_, (cudaArray*)projArray,
+            channelDesc ) );
 
    // launch kernel
    const unsigned int gridsize_x = (vol_shape_host_.x-1) / BLOCKSIZE_X + 1;
@@ -125,10 +131,11 @@ void cuda_backproject( const float* proj, float* vol )
    const unsigned int gridsize_z = (vol_shape_host_.z-1) / BLOCKSIZE_Z + 1;
    const dim3 grid = dim3( gridsize_x, gridsize_y, gridsize_z );
    const dim3 block = dim3( BLOCKSIZE_X, BLOCKSIZE_Y, BLOCKSIZE_Z );
-   kernel<<< grid, block >>>( projOffset, vol, proj );
+   kernel<<< grid, block >>>( vol );
 
    // cleanup
    gpuErrchk( cudaUnbindTexture( projTex_ ) );
+   gpuErrchk( cudaFreeArray( projArray ) );
 }
 
 #endif

@@ -82,12 +82,6 @@ proj_ramlak = tf.reshape( ramlak_batch, [ N, V, U ] )
 
 # BACKPROJECTION
 #-------------------------------------------------------------------------------------------
-# TODO: Hack! Width (in bytes) must fit cudaDevicePro::texturePitchAlignment,
-# which we enforce here manually (and tailored to our device). Need a better way
-# for that!
-pad_n = 8-U%8
-proj_pad = tf.pad( proj_ramlak, [ [0,0], [0,0], [0,pad_n] ] )
-
 vo = tf.contrib.util.make_tensor_proto( VOLUME_ORIGIN_MM,
         tf.float32 )
 geom_proto = tf.contrib.util.make_tensor_proto( geom, tf.float32 )
@@ -95,7 +89,7 @@ voxel_dimen_proto = tf.contrib.util.make_tensor_proto( [ VOXEL_DEPTH_MM,
         VOXEL_HEIGHT_MM, VOXEL_WIDTH_MM ], tf.float32 )
 proj_shape_proto = tf.contrib.util.make_tensor_proto( [ N, V, U ], tf.int32 )
 volume = ct.backproject(
-        projections = proj_pad,
+        projections = proj_ramlak,
         geom = geom_proto,
         vol_shape = VOLUME_SHAPE_VX,
         vol_origin=vo,
@@ -108,7 +102,9 @@ volume = ct.backproject(
 #-------------------------------------------------------------------------------------------
 write_op = dennerlein.write( '/tmp/test.bin', volume )
 
-with tf.Session() as sess:
+gpu_options = tf.GPUOptions( per_process_gpu_memory_fraction = 0.6 )
+
+with tf.Session( config = tf.ConfigProto( gpu_options = gpu_options ) ) as sess:
     sess.run( tf.global_variables_initializer() )
 
     # tracing according to http://stackoverflow.com/questions/34293714/can-i-measure-the-execution-time-of-individual-operations-with-tensorflow

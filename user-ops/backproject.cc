@@ -195,8 +195,6 @@ public:
       // grab input
       const auto proj = context->input( 0 ).tensor<float, 3>();
       // TODO: Check that #projections == #matrices
-      const int U = proj.dimension( 2 );   // size of projection planes
-      const int V = proj.dimension( 1 );
 
       // create output
       Tensor* volume_tensor = nullptr;
