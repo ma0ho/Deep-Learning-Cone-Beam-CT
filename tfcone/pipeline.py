@@ -8,21 +8,24 @@ from tensorflow.python.client import timeline
 # CONFIG
 #-------------------------------------------------------------------------------------------
 DATA_P = os.path.abspath(
-        os.path.dirname( os.path.abspath( __file__ ) ) + '/../phantoms/conrad-3/'
+        os.path.dirname( os.path.abspath( __file__ ) ) + '/../phantoms/conrad-4/'
     ) + '/'
 
 RAMLAK_WIDTH = 401
-VOLUME_SHAPE_VX = [ 150, 180, 220 ]
-VOLUME_ORIGIN_MM = [ -223.5, -179.5, -109.5 ]
-VOXEL_WIDTH_MM = 1
-VOXEL_HEIGHT_MM = 2
-VOXEL_DEPTH_MM = 3
+VOLUME_SHAPE_VX = [ 600, 800, 800 ]
+VOLUME_ORIGIN_MM = [ -150, -200, -200 ]
+VOXEL_WIDTH_MM = 0.5
+VOXEL_HEIGHT_MM = 0.5
+VOXEL_DEPTH_MM = 0.5
+# NOTE: See todo at ct.init_ramlak_1D
+# TODO: Check, if we need to incorporate those in the back/forward projection
+#       or if they are already encoded in the projection matrices..
 PIXEL_WIDTH_MM = 1
 PIXEL_HEIGHT_MM = 1
 SOURCE_DET_DISTANCE = 1200
-N = 250
-U = 620
-V = 480
+N = 500
+U = 800
+V = 600
 
 
 # GLOBALS
@@ -32,7 +35,7 @@ asserts = []
 
 # READ DATA
 #-------------------------------------------------------------------------------------------
-proj = dennerlein.read( DATA_P + 'shepp-logan-proj.bin' )
+proj = dennerlein.read( DATA_P + 'proj.bin' )
 geom, angles = projtable.read( DATA_P + 'projMat.txt' )
 geom_tensor = tf.constant( geom, dtype = tf.float32 )
 proj_shape = tf.shape( proj )
@@ -94,15 +97,26 @@ volume = ct.backproject(
         vol_shape = VOLUME_SHAPE_VX,
         vol_origin=vo,
         voxel_dimen = voxel_dimen_proto,
-        proj_shape = [ N, V, U ]
+        proj_shape = [ N, V, U ],
+        name = 'backprojection'
+    )
+
+fproj = ct.project(
+        volume = volume,
+        geom = geom_proto,
+        vol_shape = VOLUME_SHAPE_VX,
+        vol_origin=vo,
+        voxel_dimen = voxel_dimen_proto,
+        proj_shape = [ N, V, U ],
+        name = 'forwardprojection'
     )
 
 
 # WRITE RESULT
 #-------------------------------------------------------------------------------------------
-write_op = dennerlein.write( '/tmp/test.bin', volume )
+write_op = dennerlein.write( '/tmp/test.bin', fproj )
 
-gpu_options = tf.GPUOptions( per_process_gpu_memory_fraction = 0.6 )
+gpu_options = tf.GPUOptions( per_process_gpu_memory_fraction = 0.5 )
 
 with tf.Session( config = tf.ConfigProto( gpu_options = gpu_options ) ) as sess:
     sess.run( tf.global_variables_initializer() )

@@ -1,4 +1,5 @@
 import tensorflow as tf
+from tensorflow.python.framework import ops
 import os
 import math
 import numpy as np
@@ -6,11 +7,50 @@ import tfcone.util.numerical as nm
 import sys
 
 _path = os.path.dirname(os.path.abspath(__file__))
-_write_module = tf.load_op_library( _path + '/../../user-ops/backproject.so' )
-backproject = _write_module.backproject
+_bp_module = tf.load_op_library( _path + '/../../user-ops/backproject.so' )
+backproject = _bp_module.backproject
+project = _bp_module.project
+
+
+'''
+    Compute the gradient of the backprojection op
+    by invoking the forward projector.
+'''
+@ops.RegisterGradient( "Backproject" )
+def _backproject_grad( op, grad ):
+    proj = project(
+            volume      = grad,
+            geom        = op.get_attr( "geom" ),
+            vol_shape   = op.get_attr( "vol_shape" ),
+            vol_origin  = op.get_attr( "vol_origin" ),
+            voxel_dimen = op.get_attr( "voxel_dimen" ),
+            proj_shape  = op.get_attr( "proj_shape" )
+        )
+    return [ proj ]
+
+
+'''
+    Compute the gradient of the forward projection op
+    by invoking the backprojector.
+'''
+@ops.RegisterGradient( "Project" )
+def _project_grad( op, grad ):
+    vol = backproject(
+            proj        = grad,
+            geom        = op.get_attr( "geom" ),
+            vol_shape   = op.get_attr( "vol_shape" ),
+            vol_origin  = op.get_attr( "vol_origin" ),
+            voxel_dimen = op.get_attr( "voxel_dimen" ),
+            proj_shape  = op.get_attr( "proj_shape" )
+        )
+    return [ vol ]
+
 
 '''
     generate 1D-RamLak filter according to Kak & Slaney, chapter 3 equation 61
+
+    TODO:   Does not work for example for pixel_width_mm = 0.5. Then we have
+            a negative filter response.. Whats wrong here?
 
     Note: Conrad implements a slightly different variant, that's why results
     differ in the absolute voxel intensities

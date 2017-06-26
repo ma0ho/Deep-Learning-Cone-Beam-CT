@@ -40,7 +40,7 @@ float3 map( float3&& vp, int n )
 }
 
 __global__
-void kernel( float* vol )
+void kernel_backproject( float* vol )
 {
    const int i = blockIdx.x*blockDim.x + threadIdx.x;
    const int j = blockIdx.y*blockDim.y + threadIdx.y;
@@ -69,6 +69,58 @@ void kernel( float* vol )
    // linear volume address
    const unsigned int l = vol_shape_.x * ( k*vol_shape_.y + j ) + i;
    vol[l] = val;
+}
+
+   
+__global__
+void kernel_project( const float* vol, float* proj )
+{
+   const int i = blockIdx.x*blockDim.x + threadIdx.x;
+   const int j = blockIdx.y*blockDim.y + threadIdx.y;
+   const int k = blockIdx.z*blockDim.z + threadIdx.z;
+
+   if( i >= vol_shape_.x  || j >= vol_shape_.y || k >= vol_shape_.z )
+      return;
+
+   const float x = i*voxel_size_.x + vol_orig_.x;
+   const float y = j*voxel_size_.y + vol_orig_.y;
+   const float z = k*voxel_size_.z + vol_orig_.z;
+
+   const float v = vol[vol_shape_.x * ( k*vol_shape_.y + j ) + i] / proj_shape_.z;
+
+   for( int n = 0; n < proj_shape_.z; ++n )
+   {
+      auto ip = map( make_float3( x, y, z ), n );
+
+      ip.x *= 1.0f / ip.z;
+      ip.y *= 1.0f / ip.z;
+
+      const auto vz = v * ip.z*ip.z;
+
+      // four neighbours on projection
+      int u1 = ((int)ip.x),
+          v1 = ((int)ip.y);
+      int u2 = u1+1,
+          v2 = v1+1;
+
+      if( u1 >= 0 && v1 >= 0 && u2 < proj_shape_.x && v2 < proj_shape_.y )
+      {
+         const float wu2 = ip.x - ((float)u1);
+         const float wu1 = 1.0f - wu2;
+         const float wv2 = ip.y - ((float)v1);
+
+         const float iv2 = wv2 * vz;
+         const float iv1 = vz - iv2;
+
+         const unsigned int l1 = proj_shape_.x * ( n*proj_shape_.y + v1 ) + u1;
+         const unsigned int l2 = l1 + proj_shape_.x;
+
+         atomicAdd( &proj[l1], iv1 * wu1 );
+         atomicAdd( &proj[l1 + 1], iv1 * wu2 );
+         atomicAdd( &proj[l2], iv2 * wu1 );
+         atomicAdd( &proj[l2 + 1], iv2 * wu2 );
+      }
+   }
 }
 
 __host__
@@ -131,11 +183,32 @@ void cuda_backproject( const float* proj, float* vol )
    const unsigned int gridsize_z = (vol_shape_host_.z-1) / BLOCKSIZE_Z + 1;
    const dim3 grid = dim3( gridsize_x, gridsize_y, gridsize_z );
    const dim3 block = dim3( BLOCKSIZE_X, BLOCKSIZE_Y, BLOCKSIZE_Z );
-   kernel<<< grid, block >>>( vol );
+   kernel_backproject<<< grid, block >>>( vol );
+
+   // check for errors
+   gpuErrchk( cudaPeekAtLastError() );
+   gpuErrchk( cudaDeviceSynchronize() );
 
    // cleanup
    gpuErrchk( cudaUnbindTexture( projTex_ ) );
    gpuErrchk( cudaFreeArray( projArray ) );
+}
+
+   
+__host__
+void cuda_project( const float* vol, float* proj )
+{
+   // set proj to zero
+   cudaMemset( proj, 0, proj_shape_host_.x*proj_shape_host_.y*proj_shape_host_.z
+         * sizeof( float ) );
+
+   // launch kernel
+   const unsigned int gridsize_x = (vol_shape_host_.x-1) / BLOCKSIZE_X + 1;
+   const unsigned int gridsize_y = (vol_shape_host_.y-1) / BLOCKSIZE_Y + 1;
+   const unsigned int gridsize_z = (vol_shape_host_.z-1) / BLOCKSIZE_Z + 1;
+   const dim3 grid = dim3( gridsize_x, gridsize_y, gridsize_z );
+   const dim3 block = dim3( BLOCKSIZE_X, BLOCKSIZE_Y, BLOCKSIZE_Z );
+   kernel_project<<< grid, block >>>( vol, proj );
 }
 
 #endif

@@ -32,6 +32,26 @@ REGISTER_OP("Backproject")
    } )
 ;
 
+
+REGISTER_OP("Project")
+   .Input("volume: float")
+   .Attr("geom: tensor")
+   .Attr("vol_shape: shape")
+   .Attr("proj_shape: shape")
+   .Attr("vol_origin: tensor")
+   .Attr("voxel_dimen: tensor")
+   .Output("projections: float")
+   .SetShapeFn( []( ::tensorflow::shape_inference::InferenceContext* c )
+   {
+      TensorShapeProto sp;
+      ShapeHandle sh;
+      auto status = c->GetAttr( "proj_shape", &sp );
+      status.Update( c->MakeShapeFromShapeProto( sp, &sh ) );
+      c->set_output( 0, sh );
+      return status;
+   } )
+;
+
 class BackprojectOp : public OpKernel
 {
 
@@ -42,6 +62,7 @@ protected:
    int X_, Y_, Z_;
 
    // number of projections
+   TensorShape proj_shape_;
    int U_, V_, N_;
 
    // volume origin in mm
@@ -62,11 +83,10 @@ public:
       Y_ = vol_shape_.dim_size( 1 );
       X_ = vol_shape_.dim_size( 2 );
 
-      TensorShape proj_shape;
-      OP_REQUIRES_OK( context, context->GetAttr( "proj_shape", &proj_shape ) );
-      N_ = proj_shape.dim_size( 0 );
-      V_ = proj_shape.dim_size( 1 );
-      U_ = proj_shape.dim_size( 2 );
+      OP_REQUIRES_OK( context, context->GetAttr( "proj_shape", &proj_shape_ ) );
+      N_ = proj_shape_.dim_size( 0 );
+      V_ = proj_shape_.dim_size( 1 );
+      U_ = proj_shape_.dim_size( 2 );
 
       Tensor t;
       OP_REQUIRES_OK( context, context->GetAttr( "vol_origin", &t ) );
@@ -207,7 +227,34 @@ public:
 
 };
 
+
+class ProjectCudaOp : public BackprojectCudaOp
+{
+
+public:
+   
+   explicit ProjectCudaOp(OpKernelConstruction* context) : BackprojectCudaOp(context) {}
+
+   void Compute(OpKernelContext* context) override
+   {
+      // grab input
+      const auto vol = context->input( 0 ).tensor<float, 3>();
+      // TODO: Check that #projections == #matrices
+
+      // create output
+      Tensor* proj_tensor = nullptr;
+      OP_REQUIRES_OK( context, context->allocate_output( 0,
+               proj_shape_, &proj_tensor ) );
+      auto proj = proj_tensor->tensor<float, 3>();
+
+      cuda_project( vol.data(), proj.data() );
+   }
+
+};
+
 REGISTER_KERNEL_BUILDER( Name( "Backproject" ).Device( DEVICE_CPU ), BackprojectOp );
 REGISTER_KERNEL_BUILDER( Name( "Backproject" ).Device( DEVICE_GPU ), BackprojectCudaOp );
+
+REGISTER_KERNEL_BUILDER( Name( "Project" ).Device( DEVICE_GPU ), ProjectCudaOp );
 
 

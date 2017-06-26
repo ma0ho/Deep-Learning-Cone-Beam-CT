@@ -13,4 +13,6 @@ void cuda_init_backproject( float* geom,
 
 void cuda_backproject( const float* proj, float* vol );
 
+void cuda_project( const float* vol, float* proj );
+
 
