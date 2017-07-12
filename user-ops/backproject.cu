@@ -63,7 +63,7 @@ void kernel_backproject( float* vol )
       ip.x *= ip.z;
       ip.y *= ip.z;
 
-      val += tex2DLayered( projTex_, ip.x, ip.y, n ) * ip.z * ip.z;
+      val += tex2DLayered( projTex_, ip.x + 0.5, ip.y + 0.5, n ) * ip.z * ip.z;
    }
 
    // linear volume address
@@ -86,39 +86,51 @@ void kernel_project( const float* vol, float* proj )
    const float y = j*voxel_size_.y + vol_orig_.y;
    const float z = k*voxel_size_.z + vol_orig_.z;
 
-   const float v = vol[vol_shape_.x * ( k*vol_shape_.y + j ) + i] / proj_shape_.z;
+   const float v = vol[vol_shape_.x * ( k*vol_shape_.y + j ) + i];
 
    for( int n = 0; n < proj_shape_.z; ++n )
    {
-      auto ip = map( make_float3( x, y, z ), n );
+      float3 ip = map( make_float3( x, y, z ), n );
 
       ip.x *= 1.0f / ip.z;
       ip.y *= 1.0f / ip.z;
 
-      const auto vz = v * ip.z*ip.z;
+      const float vz = v / (ip.z*ip.z);
 
       // four neighbours on projection
-      int u1 = ((int)ip.x),
-          v1 = ((int)ip.y);
-      int u2 = u1+1,
-          v2 = v1+1;
+      const int u1 = ((int)ip.x),
+                v1 = ((int)ip.y);
+      const int u2 = u1+1,
+                v2 = v1+1;
 
-      if( u1 >= 0 && v1 >= 0 && u2 < proj_shape_.x && v2 < proj_shape_.y )
+      // simulate cudaAddressModeBorder
+      if( u1 >= -1 && v1 >= -1  && u2 <= proj_shape_.x && v2 <= proj_shape_.y )
       {
          const float wu2 = ip.x - ((float)u1);
          const float wu1 = 1.0f - wu2;
          const float wv2 = ip.y - ((float)v1);
-
-         const float iv2 = wv2 * vz;
-         const float iv1 = vz - iv2;
+         const float wv1 = 1.0f - wv2;
 
          const unsigned int l1 = proj_shape_.x * ( n*proj_shape_.y + v1 ) + u1;
          const unsigned int l2 = l1 + proj_shape_.x;
 
-         atomicAdd( &proj[l1], iv1 * wu1 );
-         atomicAdd( &proj[l1 + 1], iv1 * wu2 );
-         atomicAdd( &proj[l2], iv2 * wu1 );
-         atomicAdd( &proj[l2 + 1], iv2 * wu2 );
+         if( u1 >= 0 )
+         {
+            const float vzwu1 = vz*wu1;
+            if( v1 >= 0 )
+               atomicAdd( &proj[l1], vzwu1*wv1 );
+            if( v2 < proj_shape_.y )
+               atomicAdd( &proj[l2], vzwu1*wv2 );
+         }
+         if( u2 < proj_shape_.x )
+         {
+            const float vzwu2 = vz*wu2;
+            if( v1 >= 0 )
+               atomicAdd( &proj[l1 + 1], vzwu2*wv1 );
+            if( v2 < proj_shape_.y )
+               atomicAdd( &proj[l2 + 1], vzwu2*wv2 );
+         }
+
       }
    }
 }
