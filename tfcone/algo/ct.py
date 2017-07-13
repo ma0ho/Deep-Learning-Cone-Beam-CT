@@ -5,6 +5,7 @@ import math
 import numpy as np
 import tfcone.util.numerical as nm
 import tfcone.util.types as t
+from tfcone.inout import dennerlein
 import sys
 
 _path = os.path.dirname(os.path.abspath(__file__))
@@ -81,7 +82,7 @@ def init_ramlak_1D( config ):
 def init_parker_1D( config, beta, delta ):
     assert( beta + nm.eps >= 0 )
 
-    w = np.ones( ( config.proj_shape.W ), dtype = np.float )
+    w = np.ones( ( config.proj_shape.W ), dtype = np.float32 )
 
     for u in range( 0, config.proj_shape.W ):
         alpha = math.atan( ( u+0.5 - config.proj_shape.W/2 ) *
@@ -155,7 +156,8 @@ def init_cosine_3D( config ):
     cv = config.proj_shape.H/2 * config.pixel_shape.H
     sd2 = config.source_det_distance**2
 
-    w = np.zeros( ( 1, config.proj_shape.H, config.proj_shape.W ), dtype = np.float )
+    w = np.zeros( ( 1, config.proj_shape.H, config.proj_shape.W ), dtype =
+            np.float32 )
 
     for v in range( 0, config.proj_shape.H ):
         dv = ( (v+0.5) * config.pixel_shape.H - cv )**2
@@ -211,90 +213,126 @@ class ReconstructionConfiguration:
 
 class Reconstructor:
 
-    def __init__( self, config, name = None ):
+    def __init__( self, config, angles, trainable = False, name = None ):
         self.config = config
+        self.trainable = trainable
         self.name = name
 
-        # init cosine weights
-        self.cosine_w_np = init_cosine_3D( config )
+        with tf.name_scope( self.name, "Reconstruct" ) as scope:
+            with tf.variable_scope( self.name, "Reconstruct" ):
 
-        # init ramlak
-        self.ramlak_1D = init_ramlak_1D( config )
+                # init cosine weights
+                cosine_w_np = init_cosine_3D( config )
+                self.cosine_w = tf.Variable(
+                        initial_value = cosine_w_np,
+                        dtype = tf.float32,
+                        name = 'cosine-weights',
+                        trainable = False
+                )
 
-        # initializations for backprojection op
-        self.vol_origin_proto = tf.contrib.util.make_tensor_proto(
-                config.vol_origin.toNCHW(), tf.float32 )
-        self.voxel_dimen_proto = tf.contrib.util.make_tensor_proto(
-                config.voxel_shape.toNCHW(), tf.float32 )
-        self.proj_shape_proto = tf.contrib.util.make_tensor_proto(
-                config.proj_shape.toNCHW(), tf.int32 )
+                # init parker weights
+                # NOTE: Current configuration assumes that relative angles
+                #       remain valid even if apply is invoked with different
+                #       projection matrices!
+                parker_w_np = init_parker_3D( self.config, angles )
+                self.parker_w = tf.Variable(
+                        initial_value = parker_w_np,
+                        dtype = tf.float32,
+                        name = 'parker-weights',
+                        trainable = self.trainable
+                )
+
+                # init ramlak
+                ramlak_1D = init_ramlak_1D( config )
+                self.kernel = tf.Variable(
+                        initial_value = ramlak_1D,
+                        dtype = np.float32,
+                        name = 'ramlak-weights',
+                        trainable = False
+                )
+                self.kernel = tf.reshape( self.kernel, [ 1, self.config.ramlak_width, 1, 1 ] )
+
+                # initializations for backprojection op
+                self.vol_origin_proto = tf.contrib.util.make_tensor_proto(
+                        config.vol_origin.toNCHW(), tf.float32 )
+                self.voxel_dimen_proto = tf.contrib.util.make_tensor_proto(
+                        config.voxel_shape.toNCHW(), tf.float32 )
+
 
     '''
         proj
             the sinogram
         geom
             stack of projection matrices
-        angles
-            stack of detector angles
-        configuration
-            an instance of ReconstructionConfiguration
-        name
-            a string prepended to the op names
 
         returns
             volume tensor
     '''
-    def apply( self, proj, geom, angles ):
-        with tf.name_scope( self.name, "Reconstruct", [ proj, geom, angles ] ) as scope:
+    def apply( self, proj, geom, fullscan = False ):
+        with tf.name_scope( self.name, "Reconstruct", [ proj, geom ] ) as scope:
+            with tf.variable_scope( self.name, "Reconstruct", [ proj, geom ] ):
 
-            # COSINE
-            cosine_w = tf.constant(
-                    self.cosine_w_np,
-                    dtype = tf.float32,
-                    name = 'cosine-weights'
-            )
-            proj = tf.multiply( proj, cosine_w, name = 'cosine-weighting' )
+                # COSINE
+                proj = tf.multiply( proj, self.cosine_w, name = 'cosine-weighting' )
 
+                # PARKER
+                if not fullscan:
+                    proj = tf.multiply( proj, self.parker_w, name = 'parker-weighting' )
 
-            # PARKER
-            parker_w_np = init_parker_3D( self.config, angles )
-            parker_w = tf.constant( parker_w_np, dtype = tf.float32,
-                    name = 'parker-weights' )
-            proj = tf.multiply( proj, parker_w, name = 'parker-weighting' )
+                # RAMLAK
+                s = self.config.proj_shape
+                proj = tf.reshape( proj, [ s.N, 1, s.H, s.W ] )
+#                proj = tf.nn.conv2d(
+#                        input = proj,
+#                        filter = self.kernel,
+#                        strides = [ 1, 1, 1, 1 ],
+#                        padding = 'SAME',
+#                        data_format = 'NCHW',
+#                        name = 'ramlak-filter'
+#                )
 
-            # RAMLAK
-            # TODO: Seems like cudnn does not support 3D convolutions.. Find a way to do
-            # that with conv2d..
+                # TODO: Hack! Remove (and uncomment above) if
+                # https://github.com/tensorflow/tensorflow/issues/11327 is
+                # resolved
+                N = self.config.proj_shape.N
+                H = self.config.proj_shape.H
+                W = self.config.proj_shape.W
 
-            # need format batch, depth, height, width, channel for conv3d
-            proj = tf.reshape( proj, [ 1 ] + self.config.proj_shape.toNCHW() + [ 1 ] )
+                proja = []
 
-            def kernel_init( shape, dtype, partition_info = None ):
-                kernel = tf.Variable( self.ramlak_1D, dtype = dtype )
-                return tf.reshape( kernel, shape )
+                for i in range(0,9):
+                    p = tf.slice( proj, [int(i*(N/9)),0,0,0], [int(N/9),1,H,W] )
+                    p = tf.nn.conv2d(
+                            input = p,
+                            filter = self.kernel,
+                            strides = [ 1, 1, 1, 1 ],
+                            padding = 'SAME',
+                            data_format = 'NCHW',
+                            name = 'ramlak-filter'
+                    )
+                    proja.append( p )
 
-            proj = tf.layers.conv3d(
-                    inputs = proj,
-                    filters = 1,
-                    kernel_size = [ 1, 1, self.config.ramlak_width ],
-                    padding = 'same',
-                    use_bias = False,
-                    kernel_initializer = kernel_init,
-                    name = 'ramlak-filter'
-                )
-            proj = tf.reshape( proj, self.config.proj_shape.toNCHW() )
+                proj = tf.concat( [p for p in proja], 0 )
 
+                proj = tf.reshape( proj, s.toNCHW() )
 
-            # BACKPROJECTION
-            geom_proto = tf.contrib.util.make_tensor_proto( geom, tf.float32 )
-            return backproject(
-                    projections = proj,
-                    geom        = geom_proto,
-                    vol_shape   = self.config.vol_shape.toNCHW(),
-                    vol_origin  = self.vol_origin_proto,
-                    voxel_dimen = self.voxel_dimen_proto,
-                    proj_shape  = self.config.proj_shape.toNCHW(),
-                    name        = scope
-                )
+                # BACKPROJECTION
+                geom_proto = tf.contrib.util.make_tensor_proto( geom, tf.float32 )
+                vol = backproject(
+                        projections = proj,
+                        geom        = geom_proto,
+                        vol_shape   = self.config.vol_shape.toNCHW(),
+                        vol_origin  = self.vol_origin_proto,
+                        voxel_dimen = self.voxel_dimen_proto,
+                        proj_shape  = self.config.proj_shape.toNCHW(),
+                        name        = 'backproject'
+                    )
+
+                self.pin = proj
+
+                if fullscan:
+                    vol /= 2
+
+                return tf.nn.relu( vol, scope )
 
 
