@@ -234,9 +234,9 @@ class Reconstructor:
                 # NOTE: Current configuration assumes that relative angles
                 #       remain valid even if apply is invoked with different
                 #       projection matrices!
-                parker_w_np = init_parker_3D( self.config, angles )
+                self.parker_w_np = init_parker_3D( self.config, angles )
                 self.parker_w = tf.Variable(
-                        initial_value = parker_w_np,
+                        initial_value = self.parker_w_np,
                         dtype = tf.float32,
                         name = 'parker-weights',
                         trainable = self.trainable
@@ -258,6 +258,23 @@ class Reconstructor:
                 self.voxel_dimen_proto = tf.contrib.util.make_tensor_proto(
                         config.voxel_shape.toNCHW(), tf.float32 )
 
+
+    '''
+        Reset all trainable vars
+    '''
+    def reset():
+        with tf.name_scope( self.name, "Reconstruct" ) as scope:
+            with tf.variable_scope( self.name, "Reconstruct" ):
+                self.parker_w = tf.Variable(
+                        initial_value = self.parker_w_np,
+                        dtype = tf.float32,
+                        name = 'parker-weights',
+                        trainable = self.trainable
+                )
+
+
+    def save_vars():
+        return [ self.parker_w ]
 
     '''
         proj
