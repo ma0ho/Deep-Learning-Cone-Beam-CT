@@ -3,12 +3,12 @@ import numpy as np
 import os
 import copy
 import random
-from tfcone.inout import dennerlein, projtable
+from tfcone.inout import dennerlein, projtable, png
 from tfcone.algo import ct
 from tfcone.util import types as t
 from tfcone.util import plot as plt
 from tensorflow.python.client import timeline
-from tfcone.inout import png
+from skimage.measure import compare_ssim, compare_psnr
 
 # CONFIG
 #-------------------------------------------------------------------------------------------
@@ -49,10 +49,10 @@ LOG_DIR             = '/tmp/train/'
 
 # TRAINING CONFIG
 LIMITED_ANGLE_SIZE  = 180   # #projections for limited angle
-LEARNING_RATE       = 0.01
-EPOCHS              = 1  # unlimited
+LEARNING_RATE       = 0.001
+EPOCHS              = None  # unlimited
 BATCH_SIZE          = 1     # TODO: find out why > 1 causes OOM
-TRACK_LOSS          = 10    # number of models/losses to track
+TRACK_LOSS          = 30    # number of models/losses to track
 
 # GPU RELATED STAFF
 GPU_FRACTION        = .75
@@ -172,6 +172,9 @@ class Model:
         with tf.device("/cpu:0"):
             batch, batch_label, test, test_label = input_pipeline( train_proj_fns,
                     train_vol_fns, test_proj_fns, test_vol_fns )
+
+        self.test_label = test_label
+        self.parker_w = re.parker_w
 
         self.train_op = self.train_on_batch( batch, batch_label, re, geom_la )
 
@@ -295,10 +298,50 @@ def test_model( test_proj, test_label, save_path = 'model' ):
 
         c = lambda l: stop_crit( l ) if len( l ) >= track_loss else False
 
+        out_path = LOG_DIR
+
+        print( 'Computing volume without and with trained parameters' )
+
+        # compute volume before training and export central slice
+        vol_before = m.test_vol
+        write_png = png.writeSlice( vol_before[ int( CONF.proj_shape.N / 2 ) ],
+                out_path + 'slice_before.png' )
+        write_png_label = png.writeSlice( m.test_label[ int( CONF.proj_shape.N / 2 ) ],
+                out_path + 'slice_label.png' )
+        vol_before_np, _, _, vol_label_np, parker_w_before_np = sess.run( [ vol_before, write_png,
+            write_png_label, m.test_label, m.parker_w ]  )
+
+        # load trained model
         saver = tf.train.Saver()
         saver.restore( sess, save_path )
 
-        # TODO
+        # compute volume after training and export central slice
+        vol_after = m.test_vol
+        write_png = png.writeSlice( vol_after[ int( CONF.proj_shape.N / 2 ) ],
+                out_path + 'slice_after.png' )
+        vol_after_np, _, parker_w_after_np = sess.run( [ vol_after, write_png, m.parker_w ]  )
+
+        # plot parker weights
+        plt.plot_parker( parker_w_before_np, out_path + 'parker_before.png' )
+        plt.plot_parker( parker_w_after_np, out_path + 'parker_after.png' )
+
+
+        print( 'Computing ssim and psnr' )
+
+        # compute ssim and psnr
+        drange = vol_label_np.max()
+
+        ssim_before = compare_ssim( vol_before_np, vol_label_np, data_range = drange,
+                gaussian_weights = True, sigma = 1.5, use_sample_covariance = False )
+        ssim_after = compare_ssim( vol_after_np, vol_label_np, data_range = drange,
+                gaussian_weights = True, sigma = 1.5, use_sample_covariance = False )
+
+        psnr_before = compare_psnr( vol_label_np, vol_before_np, data_range =
+                drange )
+        psnr_after = compare_psnr( vol_label_np, vol_after_np, data_range =
+                drange )
+
+        print( ssim_before, ssim_after, psnr_before, psnr_after )
 
         coord.request_stop()
         coord.join( threads )
@@ -331,12 +374,13 @@ for i in range( 0, len( PROJ_FILES ) ):
         np.mean( l ) > l[0] )
 
     losses.append( np.min( l ) )
-    steps.append( s - ( TRACK_LOSS - np.argmin( l ) ) )
+    steps.append( np.argmin( l ) )
 
 print( losses )
 print( steps )
 
-#test_model( test_proj, test_label )
+#test_model( test_proj, test_label,
+#        '/home/ob09oxyt/dev/DeepImaging/trainings/1/model_3-107' )
 
 
 
