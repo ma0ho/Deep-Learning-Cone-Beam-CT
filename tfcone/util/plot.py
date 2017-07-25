@@ -20,7 +20,7 @@ def plot_parker( w, p ):
 
     ax.azim = 70
     ax.elev += 30
-    ax.plot_surface( x, y, z )
+    ax.plot_surface( x, y, z, cmap = cm.Blues, linewidth = .2 )
 
     plt.savefig( p )
     plt.close()
