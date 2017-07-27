@@ -466,7 +466,7 @@ if __name__ == '__main__':
         steps = []
 
         for i in range( start, end ):
-            print( 'Start training model %d' % (i+1) )
+            print( 'Start training model %d' % (i) )
 
             save_path = LOG_DIR + ( 'model_%d/' %i )
             if not os.path.exists(save_path):
