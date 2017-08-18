@@ -17,8 +17,6 @@ import argparse
 #-------------------------------------------------------------------------------------------
 
 # GEOMETRY
-RAMLAK_WIDTH        = 401
-RAMLAK_WIDTH        = 51
 VOL_SHAPE           = t.Shape3D(
                         W = 512, H = 512, D = 512
                     )
@@ -36,6 +34,7 @@ SOURCE_DET_DISTANCE = 1200
 PROJ_SHAPE          = t.ShapeProj(
                         N = 360, W = 720, H = 880
                     )
+RAMLAK_WIDTH        = 2*PROJ_SHAPE.W + 1
 
 # DATA HANDLING
 DATA_P              = os.path.abspath(
