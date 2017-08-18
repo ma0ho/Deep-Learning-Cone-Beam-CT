@@ -6,3 +6,5 @@ __pycache__
 timeline.json
 *.png
 *.bak
+*.out
+trainings/

@@ -57,6 +57,10 @@ EPOCHS              = None  # unlimited
 BATCH_SIZE          = 1     # TODO: find out why > 1 causes OOM
 TRACK_LOSS          = 30    # number of models/losses to track
 
+# TEST CONFIG
+ROI_TL              = ( 30, 70 )
+ROI_BR              = ( 482, 210 )
+
 # GPU RELATED STAFF
 GPU_FRACTION        = .75
 SAVE_GPU_MEM        = True
@@ -396,18 +400,24 @@ def test_model( validation_proj, validation_label, test_proj, test_label,
         np.save( out_path + 'parker_before.npy', parker_w_before_np )
         np.save( out_path + 'parker_after.npy', parker_w_after_np )
 
-        # compute ssim and psnr
+        # compute ssim and psnr on ROI
         print( 'Computing ssim and psnr' )
         drange = vol_label_np.max()
+        vol_before_roi = vol_before_np[ 97, ROI_TL[1]:ROI_BR[1],
+                ROI_TL[0]:ROI_BR[0] ]
+        vol_label_roi = vol_label_np[ 97, ROI_TL[1]:ROI_BR[1],
+                ROI_TL[0]:ROI_BR[0] ]
+        vol_after_roi = vol_after_np[ 97, ROI_TL[1]:ROI_BR[1],
+                ROI_TL[0]:ROI_BR[0] ]
 
-        ssim_before = compare_ssim( vol_before_np, vol_label_np, data_range = drange,
+        ssim_before = compare_ssim( vol_before_roi, vol_label_roi, data_range = drange,
                 gaussian_weights = True, sigma = 1.5, use_sample_covariance = False )
-        ssim_after = compare_ssim( vol_after_np, vol_label_np, data_range = drange,
+        ssim_after = compare_ssim( vol_after_roi, vol_label_roi, data_range = drange,
                 gaussian_weights = True, sigma = 1.5, use_sample_covariance = False )
 
-        psnr_before = compare_psnr( vol_label_np, vol_before_np, data_range =
+        psnr_before = compare_psnr( vol_label_roi, vol_before_roi, data_range =
                 drange )
-        psnr_after = compare_psnr( vol_label_np, vol_after_np, data_range =
+        psnr_after = compare_psnr( vol_label_roi, vol_after_roi, data_range =
                 drange )
 
         # write to file
