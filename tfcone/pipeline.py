@@ -138,7 +138,8 @@ class Model:
 
             with tf.control_dependencies( [ train_step ] ):
                 gstep = tf.train.get_global_step()
-                lr = tf.train.exponential_decay( LEARNING_RATE, gstep, 200, 1 )
+                #lr = tf.train.exponential_decay( LEARNING_RATE, gstep, 200, 1 )
+                lr = LEARNING_RATE
                 train_step = tf.train.GradientDescentOptimizer( lr ).minimize(
                         loss, colocate_gradients_with_ops = True, global_step =
                         gstep )
@@ -451,7 +452,12 @@ if __name__ == '__main__':
 
     rgroup.add_argument( "--only", type=int )
 
+    parser.add_argument( "--target", default = "/tmp/train/" )
+
     args = parser.parse_args()
+
+    LOG_DIR = args.target + '/'
+    print( 'Writing result to %s' % LOG_DIR )
 
     print( 'Check if all projections have corresponding labels..' )
     update_labels()

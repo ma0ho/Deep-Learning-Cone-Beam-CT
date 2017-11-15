@@ -22,8 +22,8 @@ m = im_la.max()
 im_la /= m
 
 # set line in pixel coords
-x0, y0 = 100, 0
-x1, y1 = 100, H
+x0, y0 = W/2, 0
+x1, y1 = W/2, H
 
 p_la = extract( im_la, x0, y0, x1, y1, H )
 
@@ -43,7 +43,7 @@ ax.legend( loc = 8 )
 ax.set_xlabel( 'position [px]' )
 ax.set_ylabel( 'normalized intensity' )
 ax.set_xlim( ( 0, H ) )
-ax.set_ylim( ( 0.2, 1 ) )
+ax.set_ylim( ( 0.0, 1 ) )
 #axes[2].plot(np.abs(z2-z1))
 
 #plt.show()
