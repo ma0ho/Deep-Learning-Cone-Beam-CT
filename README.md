@@ -7,6 +7,7 @@ CUDA-enabled CT reconstruction using Tensorflow.
 * Tensorflow >= 1.2
 * CMake
 * GCC 5/6
+* Python3
 
 ## How to build
 ```
