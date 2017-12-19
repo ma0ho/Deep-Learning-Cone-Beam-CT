@@ -1,34 +1,16 @@
-cmake_minimum_required(VERSION 3.1 FATAL_ERROR)
+include_directories(SYSTEM ${TF_INCLUDE} "${TF_INCLUDE}/external/nsync/public")
+link_directories(${TF_LIB})
 
-project(userops)
+list(APPEND CUDA_NVCC_FLAGS "-DGOOGLE_CUDA=1;-Xcompiler")
 
-enable_language(CXX)
+# add backproject ops
+cuda_add_library(backproject backproject.cu backproject.cc SHARED)
+target_link_libraries(backproject tensorflow_framework)
 
-find_package(CUDA QUIET REQUIRED)
+# add dennerlein writer
+add_library(write_dennerlein SHARED write_dennerlein.cc)
+target_link_libraries(write_dennerlein tensorflow_framework)
 
-# locate tf
-execute_process(
-   COMMAND python3 -c "import tensorflow as tf; print(tf.sysconfig.get_include())"
-   OUTPUT_VARIABLE TF_INCLUDE
-)
-execute_process(
-   COMMAND python3 -c "import tensorflow as tf; print(tf.sysconfig.get_lib())"
-   OUTPUT_VARIABLE TF_LIB
-)
-
-include_directories(SYSTEM
-   ${TF_INC}
-   "${TF_INC}/external/nsync/public"
-)
-
-list(APPEND CUDA_NVCC_FLAGS "-std=c++11;-DGOOGLE_CUDA=1;-fPIC;-Xcompiler")
-
-set (CMAKE_CXX_STANDARD 11)
-
-cuda_add_library(
-   backproject
-   backproject.cu backproject.cc
-)
-
-target_link_libraries(backproject ${TF_LIB})
+install(TARGETS backproject write_dennerlein
+   LIBRARY DESTINATION lib)
 

@@ -72,7 +72,7 @@ def read_noqueue( fn ):
     return tf.reshape( data, tf.concat( [ z, y, x ], 0 ) )
 
 _path = os.path.dirname(os.path.abspath(__file__))
-_write_module = tf.load_op_library( _path + '/../../user-ops/write_dennerlein.so' )
+_write_module = tf.load_op_library( _path + '/../../lib/libwrite_dennerlein.so' )
 write = _write_module.write_dennerlein
 
 

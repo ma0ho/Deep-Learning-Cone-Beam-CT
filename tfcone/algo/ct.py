@@ -9,7 +9,7 @@ from tfcone.inout import dennerlein
 import sys
 
 _path = os.path.dirname(os.path.abspath(__file__))
-_bp_module = tf.load_op_library( _path + '/../../user-ops/backproject.so' )
+_bp_module = tf.load_op_library( _path + '/../../lib/libbackproject.so' )
 backproject = _bp_module.backproject
 project = _bp_module.project
 
