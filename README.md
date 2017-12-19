@@ -3,11 +3,11 @@
 CUDA-enabled CT reconstruction using Tensorflow.
 
 ## Dependencies
-* CUDA
+* CUDA (tested on versions 8 and 9)
 * Tensorflow >= 1.2
-* CMake
-* GCC 5/6
-* Python3
+* CMake >= 3.1
+* GCC (tested on 4.9 and 7.2)
+* Python >= 3.5
 
 ## How to build
 ```
