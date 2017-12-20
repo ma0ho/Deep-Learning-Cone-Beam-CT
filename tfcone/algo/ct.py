@@ -5,7 +5,6 @@ import math
 import numpy as np
 import tfcone.util.numerical as nm
 import tfcone.util.types as t
-from tfcone.inout import dennerlein
 import sys
 
 _path = os.path.dirname(os.path.abspath(__file__))
@@ -244,13 +243,15 @@ class Reconstructor:
 
                 # init ramlak
                 ramlak_1D = init_ramlak_1D( config )
-                self.kernel = tf.Variable(
-                        initial_value = ramlak_1D,
-                        dtype = np.float32,
+                self.pad_size = int( config.ramlak_width/2 )-1
+                ramlak_1D = np.pad( ramlak_1D, ((0, self.pad_size+1)), 'constant' )
+                ramlak_ft = np.fft.fft2( ramlak_1D.reshape( 1, 1, -1 ) )
+                self.kernel_ft = tf.Variable(
+                        initial_value = ramlak_ft,
+                        dtype = tf.complex64,
                         name = 'ramlak-weights',
                         trainable = False
                 )
-                self.kernel = tf.reshape( self.kernel, [ 1, self.config.ramlak_width, 1, 1 ] )
 
                 # initializations for backprojection op
                 self.vol_origin_proto = tf.contrib.util.make_tensor_proto(
@@ -298,38 +299,10 @@ class Reconstructor:
 
                 # RAMLAK
                 s = self.config.proj_shape
-                proj = tf.reshape( proj, [ s.N, 1, s.H, s.W ] )
-#                proj = tf.nn.conv2d(
-#                        input = proj,
-#                        filter = self.kernel,
-#                        strides = [ 1, 1, 1, 1 ],
-#                        padding = 'SAME',
-#                        data_format = 'NCHW',
-#                        name = 'ramlak-filter'
-#                )
 
-                # TODO: Hack! Remove (and uncomment above) if
-                # https://github.com/tensorflow/tensorflow/issues/11327 is
-                # resolved
-                N = self.config.proj_shape.N
-                H = self.config.proj_shape.H
-                W = self.config.proj_shape.W
-
-                proja = []
-
-                for i in range(0,9):
-                    p = tf.slice( proj, [int(i*(N/9)),0,0,0], [int(N/9),1,H,W] )
-                    p = tf.nn.conv2d(
-                            input = p,
-                            filter = self.kernel,
-                            strides = [ 1, 1, 1, 1 ],
-                            padding = 'SAME',
-                            data_format = 'NCHW',
-                            name = 'ramlak-filter'
-                    )
-                    proja.append( p )
-
-                proj = tf.concat( [p for p in proja], 0 )
+                proj = tf.pad( proj, [[0,0], [0,0], [0,self.pad_size]] )
+                proj_ft = tf.fft2d( tf.cast( proj, dtype = tf.complex64 ) )
+                proj = tf.real( tf.ifft2d( self.kernel_ft*proj_ft ) )[:,:,self.pad_size:]
 
                 proj = tf.reshape( proj, s.toNCHW() )
 
