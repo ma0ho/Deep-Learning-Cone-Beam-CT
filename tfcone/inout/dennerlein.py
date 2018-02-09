@@ -8,7 +8,7 @@ import os
     shape
         Optional argument that is set as fixed shape
 '''
-def read( queue, name = None, shape = None ):
+def read( queue, name = None, shape = None, newsize = None ):
     HEADER_LENGTH = 6
     DATA_SIZE = 4
 
@@ -36,6 +36,11 @@ def read( queue, name = None, shape = None ):
 
         data = tf.reshape( data, tf.concat( [ z, y, x ], 0 ), name = scope )
 
+        if newsize is not None:
+            data = tf.expand_dims( data, 3 )
+            data = tf.image.resize_images( data, newsize, align_corners = True )
+            data = tf.squeeze( data )
+
         if shape:
             data.set_shape( shape )
 
@@ -46,7 +51,7 @@ def read( queue, name = None, shape = None ):
     Reads the given filename and returns its contents as a tensor. The shape of
     the returned tensor depends on the dennerlein header.
 '''
-def read_noqueue( fn ):
+def read_noqueue( fn, newsize ):
     HEADER_LENGTH = 6
     DATA_SIZE = 4
 
@@ -69,7 +74,14 @@ def read_noqueue( fn ):
             tf.concat( [ x*y*z, [4]], 0 )
         ), tf.float32 )
 
-    return tf.reshape( data, tf.concat( [ z, y, x ], 0 ) )
+    data = tf.reshape( data, tf.concat( [ z, y, x ], 0 ) )
+
+    if newsize is not None:
+        data = tf.expand_dims( data, 3 )
+        data = tf.image.resize_images( data, newsize, align_corners = True )
+        data = tf.squeeze( data )
+
+    return data
 
 _path = os.path.dirname(os.path.abspath(__file__))
 _write_module = tf.load_op_library( _path + '/../../lib/libwrite_dennerlein.so' )

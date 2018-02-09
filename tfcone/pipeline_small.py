@@ -4,7 +4,7 @@ import os
 import copy
 import random
 from tfcone.inout import dennerlein, projtable, png
-from tfcone.algo import ct
+from tfcone.algo import ctft as ct
 from tfcone.util import types as t
 from tfcone.util import plot as plt
 from tensorflow.python.client import timeline
@@ -34,12 +34,11 @@ SOURCE_DET_DISTANCE = 1200
 PROJ_SHAPE          = t.ShapeProj(
                         N = 360, W = 720, H = 880
                     )
-RAMLAK_WIDTH        = 2*PROJ_SHAPE.W + 1
 
 # DATA HANDLING
 DATA_P              = os.path.abspath(
                         os.path.dirname( os.path.abspath( __file__ ) )
-                        + '/../phantoms/lowdose/'
+                        + '/../phantoms/lowdose-cpy'
                     ) + '/'
 PROJ_FILES          = [ DATA_P + f for f in os.listdir( DATA_P )
                         if f.endswith(".proj.bin") ]
@@ -48,10 +47,30 @@ VOL_FILES           = [ DATA_P + f for f in os.listdir( DATA_P )
 PROJ_FILES.sort()
 VOL_FILES.sort()
 LOG_DIR             = '/tmp/train/'
+RESCALE_PROJS       = 2     # divide H/W by 2
+RESCALE_VOL         = 2     # divide H/W/D by 2
+
+if RESCALE_PROJS is not 1:
+    assert PROJ_SHAPE.W % RESCALE_PROJS is 0 and PROJ_SHAPE.H % RESCALE_PROJS is 0
+    PROJ_SHAPE.W //= RESCALE_PROJS
+    PROJ_SHAPE.H //= RESCALE_PROJS
+if RESCALE_VOL is not 1:
+    assert VOL_SHAPE.W % RESCALE_VOL is 0
+    assert VOL_SHAPE.H % RESCALE_VOL is 0
+    assert VOL_SHAPE.D % RESCALE_VOL is 0
+    VOL_SHAPE.W //= RESCALE_VOL
+    VOL_SHAPE.H //= RESCALE_VOL
+    VOL_SHAPE.D //= RESCALE_VOL
+    VOXEL_DIMS.W *= RESCALE_VOL
+    VOXEL_DIMS.H *= RESCALE_VOL
+    VOXEL_DIMS.D *= RESCALE_VOL
+
+#RAMLAK_WIDTH        = 2*PROJ_SHAPE.W + 1
+RAMLAK_WIDTH        = PROJ_SHAPE.W
 
 # TRAINING CONFIG
 LIMITED_ANGLE_SIZE  = 180   # #projections for limited angle
-LEARNING_RATE       = 0.00000002
+LEARNING_RATE       = 0.000000004
 EPOCHS              = None  # unlimited
 BATCH_SIZE          = 1     # TODO: find out why > 1 causes OOM
 TRACK_LOSS          = 30    # number of models/losses to track
@@ -62,7 +81,7 @@ ROI_BR              = ( 482, 210 )
 
 # GPU RELATED STAFF
 GPU_FRACTION        = .75
-SAVE_GPU_MEM        = True
+SAVE_GPU_MEM        = False
 GPU_OPTIONS         = tf.GPUOptions( per_process_gpu_memory_fraction = GPU_FRACTION )
 
 
@@ -93,12 +112,14 @@ def input_pipeline( train_proj_fns, train_vol_fns, test_proj_fns, test_vol_fns )
     test_label  = tf.train.string_input_producer( test_vol_fns,
             shuffle = False )
 
+    newsize = None if RESCALE_PROJS is 1 else ( PROJ_SHAPE.H, PROJ_SHAPE.W )
+
     train_proj = dennerlein.read( train_proj, 'TrainProjReader',
-            PROJ_SHAPE.toNCHW() )
+            PROJ_SHAPE.toNCHW(), newsize = newsize )
     train_label = dennerlein.read( train_label, 'TrainLabelReader',
             VOL_SHAPE.toNCHW() )
     test_proj = dennerlein.read( test_proj, 'TestProjReader',
-            PROJ_SHAPE.toNCHW() )
+            PROJ_SHAPE.toNCHW(), newsize = newsize )
     test_label = dennerlein.read( test_label, 'TestLabelReader',
             VOL_SHAPE.toNCHW() )
 
@@ -125,7 +146,11 @@ class Model:
         train_step = tf.no_op()
 
         for i in range( 0, BATCH_SIZE ):
-            with tf.device("/cpu:0"):
+            if SAVE_GPU_MEM:
+                with tf.device("/cpu:0"):
+                    train_proj = train_proj_batch[i]
+                    train_label = train_label_batch[i]
+            else:
                 train_proj = train_proj_batch[i]
                 train_label = train_label_batch[i]
             volume_la = reconstructor.apply( train_proj, geom )
@@ -178,13 +203,21 @@ class Model:
 
         geom, angles = projtable.read( DATA_P + 'projMat.txt' )
 
+        m = np.diag([1/RESCALE_PROJS, 1/RESCALE_PROJS, 1])
+        for i in range(geom.shape[0]):
+            geom[i] = np.dot(m, geom[i])
+
         re = ct.Reconstructor(
                 CONF_LA, angles[0:LIMITED_ANGLE_SIZE],
                 trainable = True,
                 name = 'LAReconstructor'
         )
         geom_la = geom[0:LIMITED_ANGLE_SIZE]
-        with tf.device("/cpu:0"):
+        if SAVE_GPU_MEM:
+            with tf.device("/cpu:0"):
+                batch, batch_label, test, test_label = input_pipeline( self.train_proj_fns,
+                        self.train_vol_fns, self.test_proj_fns, self.test_vol_fns )
+        else:
             batch, batch_label, test, test_label = input_pipeline( self.train_proj_fns,
                     self.train_vol_fns, self.test_proj_fns, self.test_vol_fns )
 
@@ -197,27 +230,37 @@ class Model:
         self.train_op = self.train_on_batch( batch, batch_label, re, geom_la )
 
         self.test_vol = re.apply( test, geom_la )
-        with tf.device("/cpu:0"):
+
+        if SAVE_GPU_MEM:
+            with tf.device("/cpu:0"):
+                self.test_loss = tf.losses.mean_squared_error( test_label, self.test_vol )
+        else:
             self.test_loss = tf.losses.mean_squared_error( test_label, self.test_vol )
 
 def split_train_validation_set( offset):
-    N = len( PROJ_FILES ) - 1
-    ntrain = N - 1
+    print(offset)
+    N = len( PROJ_FILES )
+    ntrain = N - 2
 
-    validation_idx = (offset-1) % N
+    test_idx = offset
+    validation_idx = (offset-1) % (N-1)
 
-    # put  test file to end
-    proj_files = copy.deepcopy( PROJ_FILES )
-    del proj_files[offset]              # do not use test proj
-    validation_proj = proj_files[validation_idx]
-    del proj_files[validation_idx]
+    print('%s is kept for testing.' % PROJ_FILES[test_idx])
 
-    vol_files = copy.deepcopy( VOL_FILES )
-    del vol_files[ offset ]             # do not use test volume
-    validation_vol = vol_files[validation_idx]
-    del vol_files[validation_idx]
+    proj_files = []
+    vol_files = []
+    validation_proj = None
+    validation_vol = None
+    for i, (p, v) in enumerate(zip(PROJ_FILES, VOL_FILES)):
+        if i == test_idx:
+            pass
+        elif i == validation_idx:
+            validation_proj = p
+            validation_vol = v
+        else:
+            proj_files.append(p)
+            vol_files.append(v)
 
-    print(PROJ_FILES)
     print(proj_files)
     print(validation_proj)
 
@@ -281,12 +324,18 @@ def train_model( offset = 0, save_path = '/tmp/', track_loss = TRACK_LOSS,
 # LABELS
 #-------------------------------------------------------------------------------------------
 def create_label( fn_proj, fn_vol, rec, geom ):
-    proj = dennerlein.read_noqueue( fn_proj )
+    newsize = None if RESCALE_PROJS is 1 else ( PROJ_SHAPE.H, PROJ_SHAPE.W )
+    proj = dennerlein.read_noqueue( fn_proj, newsize = newsize )
     volume = rec.apply( proj, geom, fullscan = True )
     return dennerlein.write( fn_vol, volume )
 
 def update_labels():
     geom, angles = projtable.read( DATA_P + 'projMat.txt' )
+
+    m = np.diag([1/RESCALE_PROJS, 1/RESCALE_PROJS, 1])
+    for i in range(geom.shape[0]):
+        geom[i] = np.dot(m, geom[i])
+
     ref_reconstructor = ct.Reconstructor( CONF, angles, name = 'RefReconstructor' )
 
     with tf.Session( config = tf.ConfigProto( gpu_options = GPU_OPTIONS ) ) as sess:
@@ -461,8 +510,6 @@ if __name__ == '__main__':
 
     parser.add_argument( "--target", default = "/tmp/train/" )
 
-    parser.add_argument( "--resume", action="store_true" )
-
     args = parser.parse_args()
 
     LOG_DIR = args.target + '/'
@@ -471,13 +518,7 @@ if __name__ == '__main__':
     print( 'Check if all projections have corresponding labels..' )
     update_labels()
 
-    #print( 'Dropping %s for test purposes..' % PROJ_FILES[-1] )
-    #test_proj = PROJ_FILES[-1]
-    #test_label = VOL_FILES[-1]
-    #del PROJ_FILES[-1]
-    #del VOL_FILES[-1]
-
-    if args.only is not None:
+    if args.only:
         start = args.only
         end = args.only + 1
     else:
@@ -491,7 +532,6 @@ if __name__ == '__main__':
 
         for i in range( start, end ):
             print( 'Start training model %d' % (i) )
-            print( 'Dropping %s for test purposes..' % PROJ_FILES[i] )
 
             save_path = LOG_DIR + ( 'model_%d/' %i )
             if not os.path.exists(save_path):
