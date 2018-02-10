@@ -38,7 +38,7 @@ PROJ_SHAPE          = t.ShapeProj(
 # DATA HANDLING
 DATA_P              = os.path.abspath(
                         os.path.dirname( os.path.abspath( __file__ ) )
-                        + '/../phantoms/lowdose-cpy'
+                        + '/../lowdose'
                     ) + '/'
 PROJ_FILES          = [ DATA_P + f for f in os.listdir( DATA_P )
                         if f.endswith(".proj.bin") ]
@@ -510,6 +510,8 @@ if __name__ == '__main__':
 
     parser.add_argument( "--target", default = "/tmp/train/" )
 
+    parser.add_argument( "--resume", action="store_true" )
+
     args = parser.parse_args()
 
     LOG_DIR = args.target + '/'
@@ -539,7 +541,7 @@ if __name__ == '__main__':
 
             l, s = train_model( i, save_path = save_path, stop_crit = lambda l:
                 np.median( l[:int(len(l)/2)] ) < np.median( l[int(len(l)/2):] ),
-                resume = False
+                resume = args.resume
             )
 
             losses.append( np.min( l ) )
