@@ -76,7 +76,8 @@ def init_ramlak_1D( config ):
     beta
         projection angle in [0, pi + 2*delta]
     delta
-        overscan angle
+        maximum fan angle
+        => redundancy occurs in [pi, pi+2*delta]
 
 '''
 def init_parker_1D( config, beta, delta ):
@@ -85,6 +86,7 @@ def init_parker_1D( config, beta, delta ):
     w = np.ones( ( config.proj_shape.W ), dtype = np.float32 )
 
     for u in range( 0, config.proj_shape.W ):
+        # current fan angle
         alpha = math.atan( ( u+0.5 - config.proj_shape.W/2 ) *
                 config.pixel_shape.W / config.source_det_distance )
 
@@ -101,6 +103,79 @@ def init_parker_1D( config, beta, delta ):
 
     return w
 
+def init_riess_1D( config, beta, delta ):
+    projW = config.proj_shape.W
+    pixW = config.pixel_shape.W
+    sdDist = config.source_det_distance
+
+    w = np.zeros( ( projW ), dtype = np.float32 )
+
+    # overscan angle
+    # TODO: incorrect of for less than short scan
+    over = 2*delta
+
+    def w1(b, a):
+        x = math.pi + over - b
+        y = over - 2*a
+        z = math.pi/2 * (x/y)
+        return math.pow(math.sin(z), 2)
+
+    def w2(b, a):
+        x = b
+        y = over + 2*a
+        z = math.pi/2 * (x/y)
+        return math.pow(math.sin(z), 2)
+
+    for u in range( 0, projW ):
+
+        # fan angle corresponding to u
+        alpha = math.atan( ( u+0.5 - projW/2 ) *
+                pixW / sdDist )
+
+        if math.pi + 2*delta <= beta and beta <= math.pi + over:
+            w[u] = w1(beta, alpha)
+        elif math.pi + 2*over - 2*delta <= beta and beta <= math.pi + over:
+            w[u] = 2 - w1(beta, alpha)
+        elif 0 <= beta and beta <= 2*delta + over:
+            w[u] = w2(beta, alpha)
+        elif 0 <= beta and beta <= -over - 2*delta:
+            w[u] = 2 - w2(beta, alpha)
+        else:
+            w[u] = 1
+
+    return w
+
+def init_schaefer_1D( config, beta, delta ):
+    projW = config.proj_shape.W
+    pixW = config.pixel_shape.W
+    sdDist = config.source_det_distance
+
+    w = np.zeros( ( projW ), dtype = np.float32 )
+
+    for u in range( 0, projW ):
+
+        # fan angle corresponding to u
+        alpha = math.atan( ( u+0.5 - projW/2 ) *
+                pixW / sdDist )
+
+        if beta >= math.pi + 2*alpha and beta < math.pi + delta:
+            # end of scan
+            w[u] = math.pow( math.sin( math.pi/2 * ( ( math.pi + 2*delta - beta
+                ) / ( delta - 2*alpha ) ) ), 2 )
+        elif beta >= math.pi + 2*delta - 2*alpha and beta <= math.pi + delta:
+            w[u] = 2- ( math.pow( math.sin( math.pi/2 * ( ( math.pi + 2*delta - beta
+                ) / ( delta - 2*alpha ) ) ), 2 ) )
+        elif beta >= 0 and beta <= 2*alpha + delta:
+            # begin of scan
+            w[u] = math.pow( math.sin( math.pi/2 * ( beta / (delta + 2*alpha) ) ), 2 )
+        elif beta >= 0 and beta <= -delta - 2*alpha:
+            w[u] = 2- ( math.pow( math.sin( math.pi/2 * ( beta / (delta +
+                2*alpha) ) ), 2 ) )
+        else:
+            # out of range
+            w[u] = 1
+
+    return w
 
 '''
     Generate 3D volume of parker weights
@@ -111,7 +186,7 @@ def init_parker_1D( config, beta, delta ):
     returns
         numpy array of shape [#projections, 1, U]
 '''
-def init_parker_3D( config, primary_angles_rad ):
+def init_redundancy_3D( config, primary_angles_rad, weights_type = 'parker' ):
     pa = primary_angles_rad
 
     # normalize angles to [0, 2*pi]
@@ -123,21 +198,29 @@ def init_parker_3D( config, primary_angles_rad ):
     tmp = np.where( tmp < 0, tmp + 2*math.pi, tmp )
     pa = tmp[:, np.argmin( np.max( tmp, 0 ) )]
 
-    # according to conrad implementation
+    # delta = maximum fan_angle
     delta = math.atan( ( float(config.proj_shape.W * config.pixel_shape.W) / 2 )
             / config.source_det_distance )
+
+    if weights_type == 'parker':
+        f = lambda pi: init_parker_1D( config, pi, delta )
+    elif weights_type == 'riess':
+        f = lambda pi: init_riess_1D( config, pi, delta )
+    elif weights_type == 'schaefer':
+        f = lambda pi: init_schaefer_1D( config, pi, delta )
 
     # go over projections
     w = [
             np.reshape(
-                init_parker_1D( config, pa[i], delta ),
+                f( pa[i] ),
                 ( 1, 1, config.proj_shape.W )
             )
             for i in range( 0, pa.size )
         ]
 
-    return np.concatenate( w )
+    w = np.concatenate( w )
 
+    return w
 
 '''
     Generate 3D volume of cosine weights
@@ -213,7 +296,8 @@ class ReconstructionConfiguration:
 
 class Reconstructor:
 
-    def __init__( self, config, angles, trainable = False, name = None ):
+    def __init__( self, config, angles, trainable = False, name = None,
+            weights_type = 'parker' ):
         self.config = config
         self.trainable = trainable
         self.name = name
@@ -230,11 +314,12 @@ class Reconstructor:
                         trainable = False
                 )
 
-                # init parker weights
+                # init redundancy weights
                 # NOTE: Current configuration assumes that relative angles
                 #       remain valid even if apply is invoked with different
                 #       projection matrices!
-                self.parker_w_np = init_parker_3D( self.config, angles )
+                self.parker_w_np = init_redundancy_3D( self.config, angles,
+                        weights_type )
                 self.parker_w = tf.Variable(
                         initial_value = self.parker_w_np,
                         dtype = tf.float32,

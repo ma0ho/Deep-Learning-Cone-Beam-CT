@@ -152,7 +152,8 @@ class Model:
         sess.run( self.test_vol_fns.initializer, feed_dict = { self.test_vol_fns_init:
             test_vol } )
 
-    def __init__( self, train_proj, train_vol, test_proj, test_vol, sess ):
+    def __init__( self, train_proj, train_vol, test_proj, test_vol, sess,
+            weights_type ):
         self.train_proj_fns_init = tf.placeholder( tf.string, shape = ( len(train_proj) ) )
         self.train_vol_fns_init = tf.placeholder( tf.string, shape = ( len(train_vol) ) )
         self.test_proj_fns_init = tf.placeholder( tf.string, shape = ( len(test_proj) ) )
@@ -181,7 +182,8 @@ class Model:
         re = ct.Reconstructor(
                 CONF_LA, angles[0:LIMITED_ANGLE_SIZE],
                 trainable = True,
-                name = 'LAReconstructor'
+                name = 'LAReconstructor',
+                weights_type = weights_type
         )
         geom_la = geom[0:LIMITED_ANGLE_SIZE]
         with tf.device("/cpu:0"):
@@ -310,10 +312,11 @@ def update_labels():
 
 # TEST
 #-------------------------------------------------------------------------------------------
-def write_test_volumes( test_proj, test_label, out_path = LOG_DIR ):
+def write_test_volumes( test_proj, test_label, out_path = LOG_DIR, weights_type = 'parker' ):
 
     with tf.Session( config = tf.ConfigProto( gpu_options = GPU_OPTIONS ) ) as sess:
-        m = Model( [ test_proj ], [ test_label ], [ test_proj ], [ test_label ], sess )
+        m = Model( [ test_proj ], [ test_label ], [ test_proj ], [ test_label ],
+                sess, weights_type )
 
         sess.run( tf.global_variables_initializer() )
         sess.run( tf.local_variables_initializer() )
@@ -322,12 +325,14 @@ def write_test_volumes( test_proj, test_label, out_path = LOG_DIR ):
         threads = tf.train.start_queue_runners( sess = sess, coord = coord )
 
         # compute volumes before training and export dennerlein
-        print( 'Exporting volumes without trained parameters' )
+        proj_filename = os.path.splitext(os.path.splitext(os.path.basename(test_proj))[0])[0]
+        out_fa = out_path + ('test_%s_%s_fa.bin' % (proj_filename, weights_type))
+        out_la = out_path + ('test_%s_%s_la.bin' % (proj_filename, weights_type))
+        print(out_fa)
+
         vol_before = m.test_vol
-        write_dennerlein = dennerlein.write( out_path + 'test_la.bin',
-                vol_before )
-        write_dennerlein_label = dennerlein.write( out_path + 'test_fa.bin',
-                m.test_label )
+        write_dennerlein = dennerlein.write( out_la, vol_before )
+        write_dennerlein_label = dennerlein.write( out_fa, m.test_label )
         sess.run( [ write_dennerlein, write_dennerlein_label ]  )
 
         coord.request_stop()
@@ -451,6 +456,7 @@ if __name__ == '__main__':
     group = parser.add_mutually_exclusive_group( required = True )
     group.add_argument( "--train", action="store_true" )
     group.add_argument( "--test", action="store_true" )
+    group.add_argument( "--process", action="store_true" )
 
     rgroup = parser.add_mutually_exclusive_group()
     segroup = rgroup.add_argument_group()
@@ -463,6 +469,8 @@ if __name__ == '__main__':
 
     parser.add_argument( "--resume", action="store_true" )
 
+    parser.add_argument( "--weights_type", type=str, choices = ["parker", "riess", "schaefer"], default = "parker" )
+
     args = parser.parse_args()
 
     LOG_DIR = args.target + '/'
@@ -470,12 +478,6 @@ if __name__ == '__main__':
 
     print( 'Check if all projections have corresponding labels..' )
     update_labels()
-
-    #print( 'Dropping %s for test purposes..' % PROJ_FILES[-1] )
-    #test_proj = PROJ_FILES[-1]
-    #test_label = VOL_FILES[-1]
-    #del PROJ_FILES[-1]
-    #del VOL_FILES[-1]
 
     if args.only is not None:
         start = args.only
@@ -508,12 +510,16 @@ if __name__ == '__main__':
 
     # TEST
     if args.test:
-        write_test_volumes( test_proj, test_label )
 
         for i in range( start, end ):
             print( 'Testing model %d' % i )
             test_proj = PROJ_FILES[i]
             test_label = VOL_FILES[i]
+
+            print( 'Writing test volumes for %s' % test_proj )
+            write_test_volumes( test_proj, test_label, weights_type = 'parker' )
+            write_test_volumes( test_proj, test_label, weights_type = 'riess' )
+            write_test_volumes( test_proj, test_label, weights_type = 'schaefer' )
 
             _, _, validation_proj, validation_label = split_train_validation_set( i )
 
@@ -523,9 +529,6 @@ if __name__ == '__main__':
 
             test_model( validation_proj, validation_label, test_proj, test_label,
                     '/tmp/train/model_%d/' % i, save_path )
-
-
-
 
 # print trainable vars
 #variables_names = [v.name for v in tf.trainable_variables()]
