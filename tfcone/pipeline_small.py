@@ -4,7 +4,7 @@ import os
 import copy
 import random
 from tfcone.inout import dennerlein, projtable, png
-from tfcone.algo import ctft as ct
+from tfcone.algo import ct
 from tfcone.util import types as t
 from tfcone.util import plot as plt
 from tensorflow.python.client import timeline
@@ -38,7 +38,7 @@ PROJ_SHAPE          = t.ShapeProj(
 # DATA HANDLING
 DATA_P              = os.path.abspath(
                         os.path.dirname( os.path.abspath( __file__ ) )
-                        + '/../lowdose'
+                        + '/../phantoms/lowdose-cpy'
                     ) + '/'
 PROJ_FILES          = [ DATA_P + f for f in os.listdir( DATA_P )
                         if f.endswith(".proj.bin") ]
@@ -510,7 +510,7 @@ if __name__ == '__main__':
 
     parser.add_argument( "--target", default = "/tmp/train/" )
 
-    parser.add_argument( "--resume", action="store_true" )
+    parser.add_argument( "--resume", action = "store_true" )
 
     args = parser.parse_args()
 
@@ -520,7 +520,7 @@ if __name__ == '__main__':
     print( 'Check if all projections have corresponding labels..' )
     update_labels()
 
-    if args.only:
+    if args.only is not None:
         start = args.only
         end = args.only + 1
     else:
@@ -550,12 +550,12 @@ if __name__ == '__main__':
 
     # TEST
     if args.test:
-        write_test_volumes( test_proj, test_label )
 
         for i in range( start, end ):
             print( 'Testing model %d' % i )
             test_proj = PROJ_FILES[i]
             test_label = VOL_FILES[i]
+            write_test_volumes( test_proj, test_label )
 
             _, _, validation_proj, validation_label = split_train_validation_set( i )
 
