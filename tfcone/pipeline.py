@@ -3,12 +3,10 @@ import numpy as np
 import os
 import copy
 import random
-from tfcone.inout import dennerlein, projtable, png
-from tfcone.algo import ct
-from tfcone.util import types as t
-from tfcone.util import plot as plt
+from inout import dennerlein, projtable, png
+from algo import ct
+from util import types as t
 from tensorflow.python.client import timeline
-from skimage.measure import compare_ssim, compare_psnr
 import re
 import math
 import argparse
@@ -53,13 +51,9 @@ LOG_DIR             = '/tmp/train/'
 LIMITED_ANGLE_SIZE  = 180   # #projections for limited angle
 LEARNING_RATE       = 0.00000002
 EPOCHS              = None  # unlimited
-BATCH_SIZE          = 1     # TODO: find out why > 1 causes OOM
-TRACK_LOSS          = 30    # number of models/losses to track
-
-# TEST CONFIG
-ROI_TL              = ( 30, 70 )
-ROI_BR              = ( 482, 210 )
-NOISE_STDDEV        = 0.005
+TRACK_LOSS          = 30    # number of models/losses to track for early stopping
+TEST_EVERY          = 2     # number of training steps before test is run
+WEIGHTS_TYPE        = 'parker'
 
 # GPU RELATED STAFF
 GPU_FRACTION        = .75
@@ -69,6 +63,8 @@ GPU_OPTIONS         = tf.GPUOptions( per_process_gpu_memory_fraction = GPU_FRACT
 
 # SOME SETUP
 #-------------------------------------------------------------------------------------------
+
+# full angle configuration
 CONF = ct.ReconstructionConfiguration(
         PROJ_SHAPE,
         VOL_SHAPE,
@@ -78,6 +74,8 @@ CONF = ct.ReconstructionConfiguration(
         SOURCE_DET_DISTANCE,
         RAMLAK_WIDTH
 )
+
+# limited angle configuration
 CONF_LA = copy.deepcopy( CONF )
 CONF_LA.proj_shape.N = LIMITED_ANGLE_SIZE
 
@@ -109,59 +107,52 @@ def input_pipeline( train_proj_fns, train_vol_fns, test_proj_fns, test_vol_fns )
 
     train_proj_batch, train_label_batch = tf.train.shuffle_batch(
             [ train_proj, train_label ],
-            batch_size = BATCH_SIZE,
+            batch_size = 1,
             capacity = 10,
             min_after_dequeue = 5
     )
 
-    maximum_test = tf.reduce_max(test_proj)
-    noise_test = tf.random_normal(
-            tf.shape(test_proj),
-            stddev = NOISE_STDDEV * maximum_test
-        )
-    test_proj_noisy = test_proj + noise_test
-
-    return train_proj_batch, train_label_batch, test_proj, test_label, test_proj_noisy
+    return train_proj_batch[0], train_label_batch[0], test_proj, test_label
 
 
 # MODEL
 #-------------------------------------------------------------------------------------------
 class Model:
 
-    def train_on_batch( self, train_proj_batch, train_label_batch, reconstructor, geom ):
+    def train_on_projections( self, train_proj, train_label, reconstructor, geom ):
 
         train_step = tf.no_op()
 
-        for i in range( 0, BATCH_SIZE ):
-            with tf.device("/cpu:0"):
-                train_proj = train_proj_batch[i]
-                train_label = train_label_batch[i]
-            volume_la = reconstructor.apply( train_proj, geom )
-            if SAVE_GPU_MEM:
-                # compute loss on cpu (avoid too many volume instances on gpu)
-                with tf.device("/cpu:0"):
-                    loss = tf.losses.mean_squared_error( train_label, volume_la )
-            else:
-                loss = tf.losses.mean_squared_error( train_label, volume_la )
+        volume_la = reconstructor.apply( train_proj, geom )
 
-            with tf.control_dependencies( [ train_step ] ):
-                gstep = tf.train.get_global_step()
-                #lr = tf.train.exponential_decay( LEARNING_RATE, gstep, 200, 1 )
-                lr = LEARNING_RATE
-                train_step = tf.train.GradientDescentOptimizer( lr ).minimize(
-                        loss, colocate_gradients_with_ops = True, global_step =
-                        gstep )
+        if SAVE_GPU_MEM:
+            # compute loss on cpu (avoid too many volume instances on gpu)
+            with tf.device("/cpu:0"):
+                loss = tf.losses.mean_squared_error( train_label, volume_la )
+        else:
+            loss = tf.losses.mean_squared_error( train_label, volume_la )
+
+        with tf.control_dependencies( [ train_step ] ):
+            gstep = tf.train.get_global_step()
+            train_step = tf.train.GradientDescentOptimizer( LEARNING_RATE ).minimize(
+                    loss,
+                    colocate_gradients_with_ops = True,
+                    global_step = gstep
+                )
 
         return train_step
 
     def setTest( self, test_proj, test_vol, sess ):
-        sess.run( self.test_proj_fns.initializer, feed_dict = { self.test_proj_fns_init:
-            test_proj } )
-        sess.run( self.test_vol_fns.initializer, feed_dict = { self.test_vol_fns_init:
-            test_vol } )
+        sess.run( self.test_proj_fns.initializer, feed_dict = {
+                    self.test_proj_fns_init: test_proj
+                }
+            )
+        sess.run( self.test_vol_fns.initializer, feed_dict = {
+                    self.test_vol_fns_init: test_vol
+                }
+            )
 
-    def __init__( self, train_proj, train_vol, test_proj, test_vol, sess,
-            weights_type, noise = False ):
+    def __init__( self, train_proj, train_vol, test_proj, test_vol, sess ):
         self.train_proj_fns_init = tf.placeholder( tf.string, shape = ( len(train_proj) ) )
         self.train_vol_fns_init = tf.placeholder( tf.string, shape = ( len(train_vol) ) )
         self.test_proj_fns_init = tf.placeholder( tf.string, shape = ( len(test_proj) ) )
@@ -175,15 +166,22 @@ class Model:
                 collections = [] )
         self.test_vol_fns = tf.Variable( self.test_vol_fns_init, trainable = False,
                 collections = [] )
-
-        sess.run( self.train_proj_fns.initializer, feed_dict = { self.train_proj_fns_init:
-            train_proj } )
-        sess.run( self.train_vol_fns.initializer, feed_dict = { self.train_vol_fns_init:
-            train_vol } )
-        sess.run( self.test_proj_fns.initializer, feed_dict = { self.test_proj_fns_init:
-            test_proj } )
-        sess.run( self.test_vol_fns.initializer, feed_dict = { self.test_vol_fns_init:
-            test_vol } )
+        sess.run( self.train_proj_fns.initializer, feed_dict = {
+                    self.train_proj_fns_init: train_proj
+                }
+            )
+        sess.run( self.train_vol_fns.initializer, feed_dict = {
+                    self.train_vol_fns_init: train_vol
+                }
+            )
+        sess.run( self.test_proj_fns.initializer, feed_dict = {
+                    self.test_proj_fns_init: test_proj
+                }
+            )
+        sess.run( self.test_vol_fns.initializer, feed_dict = {
+                    self.test_vol_fns_init: test_vol
+                }
+            )
 
         geom, angles = projtable.read( DATA_P + 'projMat.txt' )
 
@@ -191,27 +189,31 @@ class Model:
                 CONF_LA, angles[0:LIMITED_ANGLE_SIZE],
                 trainable = True,
                 name = 'LAReconstructor',
-                weights_type = weights_type
+                weights_type = WEIGHTS_TYPE
         )
         geom_la = geom[0:LIMITED_ANGLE_SIZE]
+
         with tf.device("/cpu:0"):
-            batch, batch_label, test, test_label, test_noisy = input_pipeline( self.train_proj_fns,
-                    self.train_vol_fns, self.test_proj_fns, self.test_vol_fns )
+            train, train_label, test, test_label = input_pipeline(
+                    self.train_proj_fns,
+                    self.train_vol_fns,
+                    self.test_proj_fns,
+                    self.test_vol_fns
+                )
 
         self.test_label = test_label
-        self.parker_w = re.parker_w
 
         if not tf.train.get_global_step():
             tf.train.create_global_step()
 
-        self.train_op = self.train_on_batch( batch, batch_label, re, geom_la )
-
+        self.train_op = self.train_on_projections( train, train_label, re, geom_la )
         self.test_vol = re.apply( test, geom_la )
-        self.test_vol_noisy = re.apply( test_noisy, geom_la )
+
         with tf.device("/cpu:0"):
             self.test_loss = tf.losses.mean_squared_error( test_label, self.test_vol )
 
-def split_train_validation_set( offset):
+
+def split_train_validation_set( offset ):
     N = len( PROJ_FILES ) - 1
     ntrain = N - 1
 
@@ -228,21 +230,16 @@ def split_train_validation_set( offset):
     validation_vol = vol_files[validation_idx]
     del vol_files[validation_idx]
 
-    print(PROJ_FILES)
-    print(proj_files)
-    print(validation_proj)
+    return proj_files, vol_files, [validation_proj], [validation_vol]
 
-    return proj_files, vol_files, [ validation_proj ], [ validation_vol ]
 
-def train_model( offset = 0, save_path = '/tmp/', track_loss = TRACK_LOSS,
-        stop_crit = lambda l: False, resume = False ):
-
+def train_model( offset, save_path, resume ):
     losses = []
+    stop_crit = lambda l: np.median( l[:int(len(l)/2)] ) < np.median( l[int(len(l)/2):] )
 
     with tf.Session( config = tf.ConfigProto( gpu_options = GPU_OPTIONS ) ) as sess:
         sets = split_train_validation_set( offset )
-
-        m = Model( sets[0], sets[1], sets[2], sets[3], sess, weights_type = 'parker' )
+        m = Model( *sets, sess, weights_type = 'parker' )
 
         sess.run( tf.global_variables_initializer() )
         sess.run( tf.local_variables_initializer() )
@@ -250,28 +247,26 @@ def train_model( offset = 0, save_path = '/tmp/', track_loss = TRACK_LOSS,
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners( sess = sess, coord = coord )
 
-        c = lambda l: stop_crit( l ) if len( l ) >= track_loss else False
+        c = lambda l: stop_crit( l ) if len( l ) >= TRACK_LOSS else False
 
-        saver = tf.train.Saver( max_to_keep = track_loss )
+        saver = tf.train.Saver( max_to_keep = TRACK_LOSS )
 
         if resume:
             cp = tf.train.latest_checkpoint( save_path )
             if cp:
-                print( 'Restoring sessing' )
+                print( 'Restoring session' )
                 saver.restore( sess, cp )
 
         try:
             while not coord.should_stop() and not c( losses ):
-                # TODO: Hack!
-                for i in range( 0, 2 ):
+                for i in range( TEST_EVERY ):
                     sess.run( m.train_op )
+
                 lv, step = sess.run( [ m.test_loss, tf.train.get_global_step() ] )
-                print( 'Step %d' % step )
-                print( 'Loss: %f' % lv )
+                print( 'Step %d; Loss: %f' % ( step, lv ) )
 
                 losses.append( lv )
-
-                if len( losses ) > track_loss:
+                if len( losses ) > TRACK_LOSS:
                     del losses[0]
 
                 saver.save( sess, save_path + 'model', global_step = step )
@@ -321,11 +316,10 @@ def update_labels():
 
 # TEST
 #-------------------------------------------------------------------------------------------
-def write_test_volumes( test_proj, test_label, out_path = LOG_DIR, weights_type = 'parker', noise = False ):
+def write_test_volumes( test_proj, test_label ):
 
     with tf.Session( config = tf.ConfigProto( gpu_options = GPU_OPTIONS ) ) as sess:
-        m = Model( [ test_proj ], [ test_label ], [ test_proj ], [ test_label ],
-                sess, weights_type )
+        m = Model( [test_proj], [test_label], [test_proj], [test_label], sess )
 
         sess.run( tf.global_variables_initializer() )
         sess.run( tf.local_variables_initializer() )
@@ -334,14 +328,11 @@ def write_test_volumes( test_proj, test_label, out_path = LOG_DIR, weights_type 
         threads = tf.train.start_queue_runners( sess = sess, coord = coord )
 
         # compute volumes before training and export dennerlein
-        proj_filename = os.path.splitext(os.path.splitext(os.path.basename(test_proj))[0])[0]
-        out_fa = out_path + ('test_%s_%s_%s_fa.bin' % (proj_filename, weights_type, 'noisy' if noise else 'nonoise' ))
-        out_la = out_path + ('test_%s_%s_%s_la.bin' % (proj_filename, weights_type, 'noisy' if noise else 'nonoise' ))
+        proj_filename = os.path.splitext( os.path.splitext( os.path.basename( test_proj ) )[0] )[0]
+        out_fa = LOG_DIR + ( 'test_%s_%s_fa.bin' % ( proj_filename, WEIGHTS_TYPE ) )
+        out_la = LOG_DIR + ( 'test_%s_%s_la.bin' % ( proj_filename, WEIGHTS_TYPE ) )
 
-        if not noise:
-            vol_before = m.test_vol
-        else:
-            vol_before = m.test_vol_noisy
+        vol_before = m.test_vol
         write_dennerlein = dennerlein.write( out_la, vol_before )
         write_dennerlein_label = dennerlein.write( out_fa, m.test_label )
         sess.run( [ write_dennerlein, write_dennerlein_label ]  )
@@ -352,10 +343,7 @@ def write_test_volumes( test_proj, test_label, out_path = LOG_DIR, weights_type 
 
     tf.reset_default_graph()
 
-
-def test_model( validation_proj, validation_label, test_proj, test_label,
-        save_path = 'model', out_path = LOG_DIR ):
-
+def test_model( validation_proj, validation_label, test_proj, test_label, save_path ):
     step = 0
     losses = []
 
@@ -369,8 +357,7 @@ def test_model( validation_proj, validation_label, test_proj, test_label,
                 checkpoints.append( match.groups()[0] )
 
     with tf.Session( config = tf.ConfigProto( gpu_options = GPU_OPTIONS ) ) as sess:
-        m = Model( [ test_proj ], [ test_label ], [ test_proj ], [ test_label ],
-                sess, weights_type = 'parker' )
+        m = Model( [test_proj], [test_label], [test_proj], [test_label], sess )
 
         sess.run( tf.global_variables_initializer() )
         sess.run( tf.local_variables_initializer() )
@@ -381,13 +368,9 @@ def test_model( validation_proj, validation_label, test_proj, test_label,
         # compute volume before training and export central slice
         print( 'Computing volume without trained parameters' )
         vol_before = m.test_vol
-        vol_before_noisy = m.test_vol_noisy
-        write_png = png.writeSlice( vol_before[ int( CONF.proj_shape.N / 2 ) ],
-                out_path + 'slice_before.png' )
-        write_png_label = png.writeSlice( m.test_label[ int( CONF.proj_shape.N / 2 ) ],
-                out_path + 'slice_label.png' )
-        vol_before_np, vol_before_noisy_np, _, _, vol_label_np, parker_w_before_np = sess.run( [ vol_before, vol_before_noisy, write_png,
-            write_png_label, m.test_label, m.parker_w ]  )
+        write_png = png.writeSlice( vol_before[CONF.proj_shape.N // 2], LOG_DIR + 'slice_before_training.png' )
+        write_png_label = png.writeSlice( m.test_label[CONF.proj_shape.N // 2], LOG_DIR + 'slice_label.png' )
+        vol_before_np, _, _, vol_label_np = sess.run( [vol_before, write_png, write_png_label, m.test_label] )
 
         # find best checkpoint
         print( 'Searching best checkpoint' )
@@ -400,76 +383,23 @@ def test_model( validation_proj, validation_label, test_proj, test_label,
         for i, cp in enumerate( checkpoints ):
             saver.restore( sess, cp )
             loss = sess.run( m.test_loss )
+
             if loss < best_cp_loss:
                 best_cp_i = i
                 best_cp_loss = loss
             print( '.', end = '', flush = True )
-            break
         print( '' )
 
         # load best model and set test volume
         print( 'Computing volume with trained parameters' )
-        m.setTest( [ test_proj ], [ test_label ], sess )
+        m.setTest( [test_proj], [test_label], sess )
         saver.restore( sess, checkpoints[best_cp_i] )
 
         # compute volume after training and export central slice + dennerlein
         vol_after = m.test_vol
-        write_png = png.writeSlice( vol_after[ int( CONF.proj_shape.N / 2 ) ],
-                out_path + 'slice_after.png' )
-        write_dennerlein = dennerlein.write( out_path + 'after.bin', vol_after )
-        vol_after_np, _, _, parker_w_after_np = sess.run( [ vol_after,
-            write_png, write_dennerlein, m.parker_w ]  )
-
-        # compute volume with added noise after training and export central slice + dennerlein
-        vol_after_noisy = m.test_vol_noisy
-        write_png = png.writeSlice( vol_after_noisy[ int( CONF.proj_shape.N / 2 ) ],
-                out_path + 'slice_after_noisy.png' )
-        write_dennerlein = dennerlein.write( out_path + 'after_noisy.bin', vol_after_noisy )
-        _, _, vol_after_noisy_np = sess.run( [ write_dennerlein, write_png, vol_after_noisy ]  )
-
-        # plot + export parker weights
-        plt.plot_parker( parker_w_before_np, out_path + 'parker_before.png' )
-        plt.plot_parker( parker_w_after_np, out_path + 'parker_after.png' )
-        np.save( out_path + 'parker_before.npy', parker_w_before_np )
-        np.save( out_path + 'parker_after.npy', parker_w_after_np )
-
-        # compute ssim and psnr on ROI
-        print( 'Computing ssim and psnr' )
-        drange = vol_label_np.max()
-        vol_before_roi = vol_before_np[ 97, ROI_TL[1]:ROI_BR[1],
-                ROI_TL[0]:ROI_BR[0] ]
-        vol_before_noisy_roi = vol_before_noisy_np[ 97, ROI_TL[1]:ROI_BR[1],
-                ROI_TL[0]:ROI_BR[0] ]
-        vol_label_roi = vol_label_np[ 97, ROI_TL[1]:ROI_BR[1],
-                ROI_TL[0]:ROI_BR[0] ]
-        vol_after_roi = vol_after_np[ 97, ROI_TL[1]:ROI_BR[1],
-                ROI_TL[0]:ROI_BR[0] ]
-        vol_after_noisy_roi = vol_after_noisy_np[ 97, ROI_TL[1]:ROI_BR[1],
-                ROI_TL[0]:ROI_BR[0] ]
-
-        ssim_before = compare_ssim( vol_before_roi, vol_label_roi, data_range = drange,
-                gaussian_weights = True, sigma = 1.5, use_sample_covariance = False )
-        ssim_before_noisy = compare_ssim( vol_before_noisy_roi, vol_label_roi, data_range = drange,
-                gaussian_weights = True, sigma = 1.5, use_sample_covariance = False )
-        ssim_after = compare_ssim( vol_after_roi, vol_label_roi, data_range = drange,
-                gaussian_weights = True, sigma = 1.5, use_sample_covariance = False )
-        ssim_after_noisy = compare_ssim( vol_after_noisy_roi, vol_label_roi, data_range = drange,
-                gaussian_weights = True, sigma = 1.5, use_sample_covariance = False )
-
-        psnr_before = compare_psnr( vol_label_roi, vol_before_roi, data_range =
-                drange )
-        psnr_before_noisy = compare_psnr( vol_label_roi, vol_before_noisy_roi, data_range =
-                drange )
-        psnr_after = compare_psnr( vol_label_roi, vol_after_roi, data_range =
-                drange )
-        psnr_after_noisy = compare_psnr( vol_label_roi, vol_after_noisy_roi, data_range =
-                drange )
-
-        # write to file
-        with open( out_path + 'measures.csv', 'w' ) as f:
-            f.write(
-                    'ssim_before,ssim_before_noisy,ssim_after,ssim_after_noisy,psnr_before,psnr_before_noisy,psnr_after,psnr_after_noisy\n' )
-            f.write( '%f,%f,%f,%f,%f,%f,%f,%f' % ( ssim_before, ssim_before_noisy, ssim_after, ssim_after_noisy, psnr_before, psnr_before_noisy, psnr_after, psnr_after_noisy ) )
+        write_png = png.writeSlice( vol_after[CONF.proj_shape.N // 2], LOG_DIR + 'slice_after_training.png' )
+        write_dennerlein = dennerlein.write( LOG_DIR + 'after_training.bin', vol_after )
+        vol_after_np, _, _ = sess.run( [vol_after, write_png, write_dennerlein]  )
 
         coord.request_stop()
         coord.join( threads )
@@ -485,28 +415,17 @@ def test_model( validation_proj, validation_label, test_proj, test_label,
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-
     group = parser.add_mutually_exclusive_group( required = True )
     group.add_argument( "--train", action="store_true" )
     group.add_argument( "--test", action="store_true" )
-    group.add_argument( "--process", action="store_true" )
-
     rgroup = parser.add_mutually_exclusive_group()
     segroup = rgroup.add_argument_group()
     segroup.add_argument( "--start", type=int, default = 0 )
     segroup.add_argument( "--end", type=int, default = -1 )
-
     rgroup.add_argument( "--only", type=int )
-
-    parser.add_argument( "--target", default = "/tmp/train/" )
-
     parser.add_argument( "--resume", action="store_true" )
-
-    parser.add_argument( "--weights_type", type=str, choices = ["parker", "riess", "schaefer"], default = "parker" )
-
     args = parser.parse_args()
 
-    LOG_DIR = args.target + '/'
     print( 'Writing result to %s' % LOG_DIR )
 
     print( 'Check if all projections have corresponding labels..' )
@@ -521,41 +440,28 @@ if __name__ == '__main__':
 
     # TRAIN
     if args.train:
-        losses = []
-        steps = []
-
         for i in range( start, end ):
             print( 'Start training model %d' % (i) )
-            print( 'Dropping %s for test purposes..' % PROJ_FILES[i] )
+            print( 'Leaving %s for test purposes..' % PROJ_FILES[i] )
 
             save_path = LOG_DIR + ( 'model_%d/' %i )
             if not os.path.exists(save_path):
                 os.makedirs(save_path)
 
-            l, s = train_model( i, save_path = save_path, stop_crit = lambda l:
-                np.median( l[:int(len(l)/2)] ) < np.median( l[int(len(l)/2):] ),
-                resume = False
-            )
-
-            losses.append( np.min( l ) )
-            steps.append( np.argmin( l ) )
-
+            l, s = train_model( i,
+                    save_path = save_path,
+                    resume = args.resume
+                )
 
     # TEST
     if args.test:
-
         for i in range( start, end ):
             print( 'Testing model %d' % i )
-            #test_proj = PROJ_FILES[i]
-            #test_label = VOL_FILES[i]
-            test_proj = PROJ_FILES[-1]
-            test_label = VOL_FILES[-1]
+            test_proj = PROJ_FILES[i]
+            test_label = VOL_FILES[i]
 
             print( 'Writing test volumes for %s' % test_proj )
-            write_test_volumes( test_proj, test_label, weights_type = 'parker' )
-            write_test_volumes( test_proj, test_label, weights_type = 'parker', noise = True )
-            write_test_volumes( test_proj, test_label, weights_type = 'riess' )
-            write_test_volumes( test_proj, test_label, weights_type = 'schaefer' )
+            write_test_volumes( test_proj, test_label )
 
             _, _, validation_proj, validation_label = split_train_validation_set( i )
 
@@ -563,15 +469,5 @@ if __name__ == '__main__':
             if not os.path.exists(save_path):
                 os.makedirs(save_path)
 
-            test_model( validation_proj, validation_label, test_proj, test_label,
-                    '/tmp/train/model_%d/' % i, save_path )
-
-# print trainable vars
-#variables_names = [v.name for v in tf.trainable_variables()]
-#values = sess.run(variables_names)
-#for k, v in zip(variables_names, values):
-#    print( "Variable: ", k )
-
-
-# make sure that labels exist
+            test_model( validation_proj, validation_label, test_proj, test_label, '/tmp/train/model_%d/' % i, save_path )
 
