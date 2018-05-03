@@ -8,7 +8,7 @@ import os
     shape
         Optional argument that is set as fixed shape
 '''
-def read( queue, name = None, shape = None, newsize = None ):
+def read( queue, name = None, shape = None ):
     HEADER_LENGTH = 6
     DATA_SIZE = 4
 
@@ -36,11 +36,6 @@ def read( queue, name = None, shape = None, newsize = None ):
 
         data = tf.reshape( data, tf.concat( [ z, y, x ], 0 ), name = scope )
 
-        if newsize is not None:
-            data = tf.expand_dims( data, 3 )
-            data = tf.image.resize_images( data, newsize, align_corners = True )
-            data = tf.squeeze( data )
-
         if shape:
             data.set_shape( shape )
 
@@ -51,7 +46,7 @@ def read( queue, name = None, shape = None, newsize = None ):
     Reads the given filename and returns its contents as a tensor. The shape of
     the returned tensor depends on the dennerlein header.
 '''
-def read_noqueue( fn, newsize ):
+def read_noqueue( fn ):
     HEADER_LENGTH = 6
     DATA_SIZE = 4
 
@@ -75,11 +70,6 @@ def read_noqueue( fn, newsize ):
         ), tf.float32 )
 
     data = tf.reshape( data, tf.concat( [ z, y, x ], 0 ) )
-
-    if newsize is not None:
-        data = tf.expand_dims( data, 3 )
-        data = tf.image.resize_images( data, newsize, align_corners = True )
-        data = tf.squeeze( data )
 
     return data
 

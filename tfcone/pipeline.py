@@ -239,7 +239,7 @@ def train_model( offset, save_path, resume ):
 
     with tf.Session( config = tf.ConfigProto( gpu_options = GPU_OPTIONS ) ) as sess:
         sets = split_train_validation_set( offset )
-        m = Model( *sets, sess, weights_type = 'parker' )
+        m = Model( *sets, sess )
 
         sess.run( tf.global_variables_initializer() )
         sess.run( tf.local_variables_initializer() )
@@ -343,7 +343,7 @@ def write_test_volumes( test_proj, test_label ):
 
     tf.reset_default_graph()
 
-def test_model( validation_proj, validation_label, test_proj, test_label, save_path ):
+def test_model( validation_proj, validation_label, test_proj, test_label, save_path, log_dir ):
     step = 0
     losses = []
 
@@ -368,8 +368,8 @@ def test_model( validation_proj, validation_label, test_proj, test_label, save_p
         # compute volume before training and export central slice
         print( 'Computing volume without trained parameters' )
         vol_before = m.test_vol
-        write_png = png.writeSlice( vol_before[CONF.proj_shape.N // 2], LOG_DIR + 'slice_before_training.png' )
-        write_png_label = png.writeSlice( m.test_label[CONF.proj_shape.N // 2], LOG_DIR + 'slice_label.png' )
+        write_png = png.writeSlice( vol_before[CONF.proj_shape.N // 2], log_dir + 'slice_before_training.png' )
+        write_png_label = png.writeSlice( m.test_label[CONF.proj_shape.N // 2], log_dir + 'slice_label.png' )
         vol_before_np, _, _, vol_label_np = sess.run( [vol_before, write_png, write_png_label, m.test_label] )
 
         # find best checkpoint
@@ -397,8 +397,8 @@ def test_model( validation_proj, validation_label, test_proj, test_label, save_p
 
         # compute volume after training and export central slice + dennerlein
         vol_after = m.test_vol
-        write_png = png.writeSlice( vol_after[CONF.proj_shape.N // 2], LOG_DIR + 'slice_after_training.png' )
-        write_dennerlein = dennerlein.write( LOG_DIR + 'after_training.bin', vol_after )
+        write_png = png.writeSlice( vol_after[CONF.proj_shape.N // 2], log_dir + 'slice_after_training.png' )
+        write_dennerlein = dennerlein.write( log_dir + 'after_training.bin', vol_after )
         vol_after_np, _, _ = sess.run( [vol_after, write_png, write_dennerlein]  )
 
         coord.request_stop()

@@ -3,9 +3,9 @@ from tensorflow.python.framework import ops
 import os
 import math
 import numpy as np
-import tfcone.util.numerical as nm
-import tfcone.util.types as t
-from tfcone.inout import dennerlein
+import util.numerical as nm
+import util.types as t
+from inout import dennerlein
 import sys
 
 _path = os.path.dirname(os.path.abspath(__file__))
